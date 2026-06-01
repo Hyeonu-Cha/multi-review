@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+#
+# multi-review — fan a PR diff to several AI-CLI reviewers (in tmux panes),
+# then reconcile their findings into one review.
+#
+# Usage:
+#   multi-review [PR_NUMBER]                 review a GitHub PR (via gh)
+#   multi-review --diff path/to.patch        review a saved diff
+#   multi-review --base origin/main          review current branch vs base (default)
+#
+# Options:
+#   --reviewers a,b,c   override the enabled reviewers from config
+#   --reconciler NAME   override the reconciler CLI
+#   --post              post the final review to the PR (needs PR_NUMBER + gh)
+#   --timeout SECONDS   per-run wait for reviewers (default 600)
+#   --no-tmux           run reviewers as background jobs instead of tmux panes
+#
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CONFIG="$ROOT/config/reviewers.json"
+REVIEW_PROMPT="$ROOT/prompts/review.md"
+RECONCILE_PROMPT="$ROOT/lib/reconcile.md"
+
+die() { echo "multi-review: $*" >&2; exit 1; }
+need() { command -v "$1" >/dev/null 2>&1 || die "required tool not found: $1"; }
+
+need jq
+
+# ---- parse args -------------------------------------------------------------
+PR=""; DIFF_FILE=""; BASE="origin/main"
+REVIEWERS_OVERRIDE=""; RECONCILER_OVERRIDE=""; POST=0; TIMEOUT=600; USE_TMUX=1
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --diff)       DIFF_FILE="$2"; shift 2;;
+    --base)       BASE="$2"; shift 2;;
+    --reviewers)  REVIEWERS_OVERRIDE="$2"; shift 2;;
+    --reconciler) RECONCILER_OVERRIDE="$2"; shift 2;;
+    --post)       POST=1; shift;;
+    --timeout)    TIMEOUT="$2"; shift 2;;
+    --no-tmux)    USE_TMUX=0; shift;;
+    -h|--help)    sed -n '2,20p' "$0"; exit 0;;
+    -*)           die "unknown option: $1";;
+    *)            PR="$1"; shift;;
+  esac
+done
+
+[ -f "$CONFIG" ] || die "missing config: $CONFIG"
+command -v tmux >/dev/null 2>&1 || USE_TMUX=0
+
+# ---- per-run workspace ------------------------------------------------------
+RUN="$ROOT/out/$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$RUN"
+DIFF="$RUN/diff.patch"
+PROMPT="$RUN/prompt.md"
+FINAL="$RUN/review.md"
+
+# ---- obtain the diff --------------------------------------------------------
+if [ -n "$DIFF_FILE" ]; then
+  cp "$DIFF_FILE" "$DIFF"
+elif [ -n "$PR" ]; then
+  need gh
+  gh pr diff "$PR" > "$DIFF"
+else
+  git rev-parse --verify "$BASE" >/dev/null 2>&1 \
+    || die "base ref '$BASE' not found (use --base or pass a PR number)"
+  git diff "$BASE"...HEAD > "$DIFF"
+fi
+[ -s "$DIFF" ] || die "diff is empty — nothing to review"
+
+# ---- build the reviewer prompt ----------------------------------------------
+cat "$REVIEW_PROMPT" "$DIFF" > "$PROMPT"
+
+# ---- resolve reviewer set ---------------------------------------------------
+if [ -n "$REVIEWERS_OVERRIDE" ]; then
+  mapfile -t NAMES < <(echo "$REVIEWERS_OVERRIDE" | tr ',' '\n' | sed '/^$/d')
+else
+  mapfile -t NAMES < <(jq -r '.reviewers[] | select(.enabled) | .name' "$CONFIG")
+fi
+[ "${#NAMES[@]}" -gt 0 ] || die "no reviewers selected"
+
+RECONCILER="${RECONCILER_OVERRIDE:-$(jq -r '.reconciler // "claude"' "$CONFIG")}"
+
+cmd_for() { jq -r --arg n "$1" '.reviewers[] | select(.name==$n) | .cmd' "$CONFIG"; }
+
+echo "› reviewers: ${NAMES[*]}    reconciler: $RECONCILER"
+echo "› diff: $(wc -l < "$DIFF") lines    workspace: $RUN"
+
+# ---- build per-reviewer commands --------------------------------------------
+declare -a PANE_CMDS=()
+for name in "${NAMES[@]}"; do
+  tmpl="$(cmd_for "$name")"
+  [ -n "$tmpl" ] && [ "$tmpl" != "null" ] || die "no command configured for reviewer '$name'"
+  out="$RUN/$name.json"
+  cmd="${tmpl//\{PROMPT\}/$PROMPT}"; cmd="${cmd//\{OUT\}/$out}"
+  # wrap so we always drop a .done marker even on failure
+  PANE_CMDS+=("{ $cmd; } 2>&1; echo \"--- $name exited \$? ---\"; touch '$out.done'")
+done
+
+# ---- launch -----------------------------------------------------------------
+if [ "$USE_TMUX" -eq 1 ]; then
+  SESSION="mreview-$$"
+  tmux new-session -d -s "$SESSION" -n review "${PANE_CMDS[0]}"
+  for i in $(seq 1 $(( ${#PANE_CMDS[@]} - 1 )) ); do
+    tmux split-window -t "$SESSION" "${PANE_CMDS[$i]}"
+    tmux select-layout -t "$SESSION" tiled >/dev/null
+  done
+  echo "› tmux session '$SESSION' started — attach with:  tmux attach -t $SESSION"
+else
+  echo "› tmux not used — running reviewers as background jobs"
+  for c in "${PANE_CMDS[@]}"; do bash -c "$c" >/dev/null 2>&1 & done
+fi
+
+# ---- wait for all reviewers -------------------------------------------------
+echo -n "› waiting for reviewers"
+elapsed=0
+while :; do
+  done_count=0
+  for name in "${NAMES[@]}"; do [ -f "$RUN/$name.json.done" ] && done_count=$((done_count+1)); done
+  [ "$done_count" -ge "${#NAMES[@]}" ] && break
+  [ "$elapsed" -ge "$TIMEOUT" ] && { echo " timeout"; break; }
+  sleep 3; elapsed=$((elapsed+3)); echo -n "."
+done
+echo " ($done_count/${#NAMES[@]} done)"
+[ "${USE_TMUX:-0}" -eq 1 ] && tmux kill-session -t "$SESSION" 2>/dev/null || true
+
+# ---- assemble reconcile input -----------------------------------------------
+RECON_IN="$RUN/_reconcile_input.md"
+cat "$RECONCILE_PROMPT" > "$RECON_IN"
+got=0
+for name in "${NAMES[@]}"; do
+  if [ -s "$RUN/$name.json" ]; then
+    { echo; echo "### reviewer: $name"; cat "$RUN/$name.json"; echo; } >> "$RECON_IN"
+    got=$((got+1))
+  else
+    echo "  ! $name produced no output" >&2
+  fi
+done
+[ "$got" -gt 0 ] || die "no reviewer produced output — check $RUN/*.json"
+
+# ---- reconcile --------------------------------------------------------------
+rtmpl="$(cmd_for "$RECONCILER")"
+[ -n "$rtmpl" ] && [ "$rtmpl" != "null" ] || die "reconciler '$RECONCILER' has no command in config"
+rcmd="${rtmpl//\{PROMPT\}/$RECON_IN}"; rcmd="${rcmd//\{OUT\}/$FINAL}"
+echo "› reconciling $got reviews with $RECONCILER"
+bash -c "$rcmd" >/dev/null
+[ -s "$FINAL" ] || die "reconciler produced no output"
+
+echo
+echo "================ COMBINED REVIEW ================"
+cat "$FINAL"
+echo "================================================"
+echo "› saved: $FINAL"
+
+# ---- optional post ----------------------------------------------------------
+if [ "$POST" -eq 1 ]; then
+  [ -n "$PR" ] || die "--post requires a PR number"
+  need gh
+  gh pr review "$PR" --comment --body-file "$FINAL"
+  echo "› posted review to PR #$PR"
+fi

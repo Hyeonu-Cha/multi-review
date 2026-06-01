@@ -1,0 +1,26 @@
+{
+  "_comment": "Each reviewer runs in its own tmux pane. {PROMPT} = path to the prompt+diff file, {OUT} = path the reviewer must write its JSON findings to. The command must read {PROMPT} and write findings to {OUT}. Toggle with 'enabled'. 'reconciler' names the reviewer used to merge all findings into the final review.",
+  "reviewers": [
+    {
+      "name": "claude",
+      "enabled": true,
+      "cmd": "claude -p \"$(cat {PROMPT})\" | tee {OUT}"
+    },
+    {
+      "name": "codex",
+      "enabled": true,
+      "cmd": "codex exec \"$(cat {PROMPT})\" | tee {OUT}"
+    },
+    {
+      "name": "agy",
+      "enabled": false,
+      "cmd": "agy -p \"$(cat {PROMPT})\" | tee {OUT}"
+    },
+    {
+      "name": "gemini",
+      "enabled": false,
+      "cmd": "gemini -p \"$(cat {PROMPT})\" | tee {OUT}"
+    }
+  ],
+  "reconciler": "claude"
+}
