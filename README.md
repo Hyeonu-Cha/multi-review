@@ -23,12 +23,20 @@ issues multiple models agree on, drops noise, and ranks by severity.
 
 ## Requirements
 
-- `bash`, `tmux`, `jq`
+- `bash`, `jq`
+- A pane backend (auto-detected): `tmux` (Linux/WSL) **or** `wezterm` (native Windows)
 - `gh` (only for reviewing/posting to GitHub PRs)
 - The reviewer CLIs you enable (`claude`, `codex`, `agy`, `gemini`, …) on your `PATH`
 
-> Designed for a Linux/WSL environment (where `tmux` and `agy` live). Use `--no-tmux`
-> to run reviewers as background jobs where tmux isn't available.
+### Pane backends (`--backend auto|tmux|wezterm|none`)
+
+| Backend | Where | Notes |
+|---|---|---|
+| `tmux` | Linux / WSL | One tmux pane per reviewer. |
+| `wezterm` | native Windows | **Run `multi-review` from inside a WezTerm window.** Panes are spawned in that instance via `wezterm cli` (needs Git Bash for the reviewer scripts). |
+| `none` | anywhere | No panes; reviewers run as background jobs. Use `--no-tmux` as a shortcut. |
+
+`auto` picks `tmux` if present, else a reachable `wezterm`, else `none`.
 
 ## Usage
 
@@ -68,5 +76,7 @@ for subscription-based runs.
 
 ## Status
 
-Authored and syntax-checked. The live tmux run needs a Linux/WSL host with the CLIs
-installed; flag defaults in `reviewers.json` may need tuning per CLI version.
+Authored and syntax-checked. The WezTerm backend's pane-spawn + completion-detection
+mechanism is verified working on Windows (Git Bash). End-to-end review still needs the
+reviewer CLIs installed and authenticated; the `cmd` flag defaults in `reviewers.json`
+may need tuning per CLI version (e.g. `agy` non-interactive flags).
