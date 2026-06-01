@@ -1,0 +1,222 @@
+#!/usr/bin/env bash
+#
+# multi-review — fan a PR diff to several AI-CLI reviewers (each in its own pane),
+# then reconcile their findings into one review.
+#
+# Usage:
+#   multi-review [PR_NUMBER]                 review a GitHub PR (via gh)
+#   multi-review --diff path/to.patch        review a saved diff
+#   multi-review --base origin/main          review current branch vs base (default)
+#
+# Options:
+#   --reviewers a,b,c   override the enabled reviewers from config
+#   --reconciler NAME   override the reconciler CLI
+#   --backend B         pane backend: auto|tmux|wezterm|none  (default: auto)
+#   --no-tmux           alias for --backend none (reviewers run as background jobs)
+#   --post              post the final review to the PR (needs PR_NUMBER + gh)
+#   --timeout SECONDS   per-run wait for reviewers (default 600)
+#
+# Backends:
+#   tmux     — Linux/WSL. One tmux pane per reviewer.
+#   wezterm  — native Windows. Run this FROM INSIDE a WezTerm window; panes are
+#              spawned in that instance via `wezterm cli`.
+#   none     — no panes; reviewers run as background jobs (works anywhere).
+#
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CONFIG="$ROOT/config/reviewers.json"
+REVIEW_PROMPT="$ROOT/prompts/review.md"
+RECONCILE_PROMPT="$ROOT/lib/reconcile.md"
+
+die() { echo "multi-review: $*" >&2; exit 1; }
+need() { command -v "$1" >/dev/null 2>&1 || die "required tool not found: $1"; }
+
+need jq
+
+# ---- parse args -------------------------------------------------------------
+PR=""; DIFF_FILE=""; BASE="origin/main"
+REVIEWERS_OVERRIDE=""; RECONCILER_OVERRIDE=""; POST=0; TIMEOUT=600; BACKEND="auto"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --diff)       DIFF_FILE="$2"; shift 2;;
+    --base)       BASE="$2"; shift 2;;
+    --reviewers)  REVIEWERS_OVERRIDE="$2"; shift 2;;
+    --reconciler) RECONCILER_OVERRIDE="$2"; shift 2;;
+    --backend)    BACKEND="$2"; shift 2;;
+    --no-tmux)    BACKEND="none"; shift;;
+    --post)       POST=1; shift;;
+    --timeout)    TIMEOUT="$2"; shift 2;;
+    -h|--help)    sed -n '2,30p' "$0"; exit 0;;
+    -*)           die "unknown option: $1";;
+    *)            PR="$1"; shift;;
+  esac
+done
+
+[ -f "$CONFIG" ] || die "missing config: $CONFIG"
+
+# ---- backend detection ------------------------------------------------------
+WEZTERM_BIN="$(command -v wezterm || true)"
+[ -z "$WEZTERM_BIN" ] && [ -x "/c/Program Files/WezTerm/wezterm" ] && WEZTERM_BIN="/c/Program Files/WezTerm/wezterm"
+
+wez() { MSYS2_ARG_CONV_EXCL='*' "$WEZTERM_BIN" cli --no-auto-start "$@"; }
+wez_ok() { [ -n "$WEZTERM_BIN" ] && wez list >/dev/null 2>&1; }
+
+if [ "$BACKEND" = "auto" ]; then
+  if command -v tmux >/dev/null 2>&1; then BACKEND="tmux"
+  elif wez_ok; then BACKEND="wezterm"
+  else BACKEND="none"; fi
+fi
+case "$BACKEND" in
+  tmux)    need tmux;;
+  wezterm) wez_ok || die "wezterm backend: no running WezTerm instance reachable — run this from inside a WezTerm window";;
+  none)    ;;
+  *)       die "unknown backend: $BACKEND";;
+esac
+
+# ---- per-run workspace ------------------------------------------------------
+RUN="$ROOT/out/$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$RUN"
+DIFF="$RUN/diff.patch"
+PROMPT="$RUN/prompt.md"
+FINAL="$RUN/review.md"
+
+# ---- obtain the diff --------------------------------------------------------
+if [ -n "$DIFF_FILE" ]; then
+  cp "$DIFF_FILE" "$DIFF"
+elif [ -n "$PR" ]; then
+  need gh
+  gh pr diff "$PR" > "$DIFF"
+else
+  git rev-parse --verify "$BASE" >/dev/null 2>&1 \
+    || die "base ref '$BASE' not found (use --base or pass a PR number)"
+  git diff "$BASE"...HEAD > "$DIFF"
+fi
+[ -s "$DIFF" ] || die "diff is empty — nothing to review"
+
+# ---- build the reviewer prompt ----------------------------------------------
+cat "$REVIEW_PROMPT" "$DIFF" > "$PROMPT"
+
+# ---- resolve reviewer set ---------------------------------------------------
+if [ -n "$REVIEWERS_OVERRIDE" ]; then
+  mapfile -t NAMES < <(echo "$REVIEWERS_OVERRIDE" | tr ',' '\n' | sed '/^$/d')
+else
+  mapfile -t NAMES < <(jq -r '.reviewers[] | select(.enabled) | .name' "$CONFIG")
+fi
+[ "${#NAMES[@]}" -gt 0 ] || die "no reviewers selected"
+
+RECONCILER="${RECONCILER_OVERRIDE:-$(jq -r '.reconciler // "claude"' "$CONFIG")}"
+cmd_for() { jq -r --arg n "$1" '.reviewers[] | select(.name==$n) | .cmd' "$CONFIG"; }
+
+echo "› backend: $BACKEND    reviewers: ${NAMES[*]}    reconciler: $RECONCILER"
+echo "› diff: $(wc -l < "$DIFF") lines    workspace: $RUN"
+
+# ---- write one runnable script per reviewer ---------------------------------
+# (avoids all cross-shell quoting issues; each pane just runs `bash <script>`)
+declare -a SCRIPTS=()
+for name in "${NAMES[@]}"; do
+  tmpl="$(cmd_for "$name")"
+  [ -n "$tmpl" ] && [ "$tmpl" != "null" ] || die "no command configured for reviewer '$name'"
+  out="$RUN/$name.json"
+  cmd="${tmpl//\{PROMPT\}/$PROMPT}"; cmd="${cmd//\{OUT\}/$out}"
+  script="$RUN/run-$name.sh"
+  {
+    echo "#!/usr/bin/env bash"
+    echo "set +e"
+    echo "$cmd"
+    echo "rc=\$?"
+    echo "echo \"--- $name exited \$rc ---\""
+    echo "touch '$out.done'"
+  } > "$script"
+  SCRIPTS+=("$script")
+done
+
+# ---- launch reviewers -------------------------------------------------------
+launch_tmux() {
+  SESSION="mreview-$$"
+  tmux new-session -d -s "$SESSION" -n review "bash '${SCRIPTS[0]}'"
+  for i in $(seq 1 $(( ${#SCRIPTS[@]} - 1 )) ); do
+    tmux split-window -t "$SESSION" "bash '${SCRIPTS[$i]}'"
+    tmux select-layout -t "$SESSION" tiled >/dev/null
+  done
+  echo "› tmux session '$SESSION' — attach with:  tmux attach -t $SESSION"
+}
+
+launch_wezterm() {
+  # Anchor on the current pane ($WEZTERM_PANE when run inside WezTerm) or the
+  # first pane WezTerm reports. `spawn` needs a focused pane; `split-pane` with
+  # an explicit --pane-id works even when invoked from outside WezTerm.
+  local bash_win anchor winscript newpane
+  bash_win="$(cygpath -w "$(command -v bash)")"
+  anchor="${WEZTERM_PANE:-}"
+  if [ -z "$anchor" ]; then
+    anchor="$(wez list --format json 2>/dev/null | jq -r '.[0].pane_id // empty')"
+  fi
+  [ -n "$anchor" ] || die "wezterm: could not determine a target pane (run from inside WezTerm)"
+  for s in "${SCRIPTS[@]}"; do
+    winscript="$(cygpath -m "$s")"
+    newpane="$(wez split-pane --pane-id "$anchor" -- "$bash_win" -l "$winscript")"
+    [ -n "$newpane" ] && anchor="$newpane"   # cascade so panes don't all halve one
+  done
+  echo "› wezterm: ${#SCRIPTS[@]} panes spawned"
+}
+
+launch_none() {
+  echo "› backend 'none' — running reviewers as background jobs"
+  for s in "${SCRIPTS[@]}"; do bash "$s" >/dev/null 2>&1 & done
+}
+
+case "$BACKEND" in
+  tmux)    launch_tmux;;
+  wezterm) launch_wezterm;;
+  none)    launch_none;;
+esac
+
+# ---- wait for all reviewers -------------------------------------------------
+echo -n "› waiting for reviewers"
+elapsed=0
+while :; do
+  done_count=0
+  for name in "${NAMES[@]}"; do [ -f "$RUN/$name.json.done" ] && done_count=$((done_count+1)); done
+  [ "$done_count" -ge "${#NAMES[@]}" ] && break
+  [ "$elapsed" -ge "$TIMEOUT" ] && { echo " timeout"; break; }
+  sleep 3; elapsed=$((elapsed+3)); echo -n "."
+done
+echo " ($done_count/${#NAMES[@]} done)"
+[ "$BACKEND" = "tmux" ] && tmux kill-session -t "$SESSION" 2>/dev/null || true
+
+# ---- assemble reconcile input -----------------------------------------------
+RECON_IN="$RUN/_reconcile_input.md"
+cat "$RECONCILE_PROMPT" > "$RECON_IN"
+got=0
+for name in "${NAMES[@]}"; do
+  if [ -s "$RUN/$name.json" ]; then
+    { echo; echo "### reviewer: $name"; cat "$RUN/$name.json"; echo; } >> "$RECON_IN"
+    got=$((got+1))
+  else
+    echo "  ! $name produced no output" >&2
+  fi
+done
+[ "$got" -gt 0 ] || die "no reviewer produced output — check $RUN/*.json"
+
+# ---- reconcile --------------------------------------------------------------
+rtmpl="$(cmd_for "$RECONCILER")"
+[ -n "$rtmpl" ] && [ "$rtmpl" != "null" ] || die "reconciler '$RECONCILER' has no command in config"
+rcmd="${rtmpl//\{PROMPT\}/$RECON_IN}"; rcmd="${rcmd//\{OUT\}/$FINAL}"
+echo "› reconciling $got reviews with $RECONCILER"
+bash -c "$rcmd" >/dev/null
+[ -s "$FINAL" ] || die "reconciler produced no output"
+
+echo
+echo "================ COMBINED REVIEW ================"
+cat "$FINAL"
+echo "================================================"
+echo "› saved: $FINAL"
+
+# ---- optional post ----------------------------------------------------------
+if [ "$POST" -eq 1 ]; then
+  [ -n "$PR" ] || die "--post requires a PR number"
+  need gh
+  gh pr review "$PR" --comment --body-file "$FINAL"
+  echo "› posted review to PR #$PR"
+fi
