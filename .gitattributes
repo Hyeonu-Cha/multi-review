@@ -1,0 +1,3 @@
+# Keep shell scripts LF so shebangs work on Linux/WSL even when authored on Windows
+bin/multi-review text eol=lf
+*.sh text eol=lf
