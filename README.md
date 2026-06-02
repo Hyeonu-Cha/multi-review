@@ -1,4 +1,4 @@
-# code-review-mcp
+# multi-review
 
 Multi-CLI code review. Fan a PR diff out to several AI-CLI reviewers
 (Claude, Antigravity/`agy`, Codex, Gemini, …) running **headlessly in parallel**,
@@ -51,7 +51,7 @@ shouldn't travel between PCs), so expect to install + sign in once per machine.
 2. Install the reviewer CLIs you want (`claude`, `agy`, …) and **log into each**.
 3. Clone the repo:
    ```
-   git clone https://github.com/Hyeonu-Cha/code-review-mcp.git
+   git clone https://github.com/Hyeonu-Cha/multi-review.git
    ```
 4. `cd` into the repo (or any repo you want reviewed) and run `multi-review`. No GUI
    needed — reviewers run headless. (Add `--backend wezterm`, from inside a WezTerm
