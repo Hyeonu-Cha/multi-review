@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 #
-# multi-review — fan a PR diff to several AI-CLI reviewers (each in its own pane),
-# then reconcile their findings into one review.
+# multi-review — fan a PR diff to several AI-CLI reviewers, each running a one-shot
+# review (headless background jobs by default), then reconcile findings into one review.
+#
+# Each reviewer runs its CLI's non-interactive "print" mode. The shared instruction
+# tells the agent to review the diff and WRITE its JSON findings to a file with its own
+# tools; we read that file, not stdout (CLIs like agy/Antigravity render only to a TTY
+# and emit nothing to a pipe, but still do file/tool work headless). A final headless
+# reconcile pass merges the files into one review.
 #
 # Usage:
 #   multi-review [PR_NUMBER]                 review a GitHub PR (via gh)
@@ -10,17 +16,17 @@
 #
 # Options:
 #   --reviewers a,b,c   override the enabled reviewers from config
-#   --reconciler NAME   override the reconciler CLI
-#   --backend B         pane backend: auto|tmux|wezterm|none  (default: auto)
-#   --no-tmux           alias for --backend none (reviewers run as background jobs)
+#   --reconciler NAME   override the reconciler CLI name (must exist in config)
+#   --backend B         none|wezterm|tmux  (default: none, headless)
+#   --no-reconcile      fan out only; print each reviewer's JSON path and exit
+#                       (used by the /multi-review skill so Claude reconciles)
 #   --post              post the final review to the PR (needs PR_NUMBER + gh)
-#   --timeout SECONDS   per-run wait for reviewers (default 600)
+#   --timeout SECONDS   per-run wait for reviewers to write their JSON (default 900)
 #
 # Backends:
-#   tmux     — Linux/WSL. One tmux pane per reviewer.
-#   wezterm  — native Windows. Run this FROM INSIDE a WezTerm window; panes are
-#              spawned in that instance via `wezterm cli`.
-#   none     — no panes; reviewers run as background jobs (works anywhere).
+#   none    — default. Reviewers run as headless background jobs. No GUI needed.
+#   wezterm — optional, to WATCH live. Run this FROM INSIDE a WezTerm window.
+#   tmux    — optional, to watch live on Linux/WSL.
 #
 set -euo pipefail
 
@@ -28,25 +34,32 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG="$ROOT/config/reviewers.json"
 REVIEW_PROMPT="$ROOT/prompts/review.md"
 RECONCILE_PROMPT="$ROOT/lib/reconcile.md"
+START_DIR="$(pwd)"
 
 die() { echo "multi-review: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "required tool not found: $1"; }
+
+# Windows jq emits CRLF; strip CR so values feeding shell vars don't carry \r.
+jqr() { jq "$@" | tr -d '\r'; }
+# Windows path (forward-slash, no escaping) for handing file paths to Windows CLIs.
+winpath() { cygpath -m "$1" 2>/dev/null || echo "$1"; }
 
 need jq
 
 # ---- parse args -------------------------------------------------------------
 PR=""; DIFF_FILE=""; BASE="origin/main"
-REVIEWERS_OVERRIDE=""; RECONCILER_OVERRIDE=""; POST=0; TIMEOUT=600; BACKEND="auto"
+REVIEWERS_OVERRIDE=""; RECONCILER_OVERRIDE=""; POST=0; TIMEOUT=900; BACKEND="auto"; NO_RECONCILE=0
+needval() { [ $# -ge 2 ] || die "missing argument for $1"; }
 while [ $# -gt 0 ]; do
   case "$1" in
-    --diff)       DIFF_FILE="$2"; shift 2;;
-    --base)       BASE="$2"; shift 2;;
-    --reviewers)  REVIEWERS_OVERRIDE="$2"; shift 2;;
-    --reconciler) RECONCILER_OVERRIDE="$2"; shift 2;;
-    --backend)    BACKEND="$2"; shift 2;;
-    --no-tmux)    BACKEND="none"; shift;;
-    --post)       POST=1; shift;;
-    --timeout)    TIMEOUT="$2"; shift 2;;
+    --diff)        needval "$@"; DIFF_FILE="$2"; shift 2;;
+    --base)        needval "$@"; BASE="$2"; shift 2;;
+    --reviewers)   needval "$@"; REVIEWERS_OVERRIDE="$2"; shift 2;;
+    --reconciler)  needval "$@"; RECONCILER_OVERRIDE="$2"; shift 2;;
+    --backend)     needval "$@"; BACKEND="$2"; shift 2;;
+    --no-reconcile) NO_RECONCILE=1; shift;;
+    --post)        POST=1; shift;;
+    --timeout)    needval "$@"; TIMEOUT="$2"; shift 2;;
     -h|--help)    sed -n '2,30p' "$0"; exit 0;;
     -*)           die "unknown option: $1";;
     *)            PR="$1"; shift;;
@@ -62,16 +75,15 @@ WEZTERM_BIN="$(command -v wezterm || true)"
 wez() { MSYS2_ARG_CONV_EXCL='*' "$WEZTERM_BIN" cli --no-auto-start "$@"; }
 wez_ok() { [ -n "$WEZTERM_BIN" ] && wez list >/dev/null 2>&1; }
 
-if [ "$BACKEND" = "auto" ]; then
-  if command -v tmux >/dev/null 2>&1; then BACKEND="tmux"
-  elif wez_ok; then BACKEND="wezterm"
-  else BACKEND="none"; fi
-fi
+# Default is headless: reviewers run as background jobs and write their findings to
+# files (no terminal needed — even TTY-rendering CLIs like agy do tool/file work
+# headless). wezterm/tmux are opt-in only if you want to WATCH the models work live.
+[ "$BACKEND" = "auto" ] && BACKEND="none"
 case "$BACKEND" in
-  tmux)    need tmux;;
-  wezterm) wez_ok || die "wezterm backend: no running WezTerm instance reachable — run this from inside a WezTerm window";;
   none)    ;;
-  *)       die "unknown backend: $BACKEND";;
+  wezterm) wez_ok || die "wezterm backend: no running WezTerm instance reachable — run this from inside a WezTerm window";;
+  tmux)    need tmux;;
+  *)       die "unknown backend: $BACKEND (use none, wezterm, or tmux)";;
 esac
 
 # ---- per-run workspace ------------------------------------------------------
@@ -79,7 +91,7 @@ RUN="$ROOT/out/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$RUN"
 DIFF="$RUN/diff.patch"
 PROMPT="$RUN/prompt.md"
-FINAL="$RUN/review.md"
+FINAL="$RUN/review.json"
 
 # ---- obtain the diff --------------------------------------------------------
 if [ -n "$DIFF_FILE" ]; then
@@ -94,122 +106,173 @@ else
 fi
 [ -s "$DIFF" ] || die "diff is empty — nothing to review"
 
-# ---- build the reviewer prompt ----------------------------------------------
+# ---- build the criteria+schema file the agents read -------------------------
 cat "$REVIEW_PROMPT" "$DIFF" > "$PROMPT"
 
 # ---- resolve reviewer set ---------------------------------------------------
 if [ -n "$REVIEWERS_OVERRIDE" ]; then
   mapfile -t NAMES < <(echo "$REVIEWERS_OVERRIDE" | tr ',' '\n' | sed '/^$/d')
 else
-  mapfile -t NAMES < <(jq -r '.reviewers[] | select(.enabled) | .name' "$CONFIG")
+  mapfile -t NAMES < <(jqr -r '.reviewers[] | select(.enabled) | .name' "$CONFIG")
 fi
 [ "${#NAMES[@]}" -gt 0 ] || die "no reviewers selected"
 
-RECONCILER="${RECONCILER_OVERRIDE:-$(jq -r '.reconciler // "claude"' "$CONFIG")}"
-cmd_for() { jq -r --arg n "$1" '.reviewers[] | select(.name==$n) | .cmd' "$CONFIG"; }
+RECONCILER="${RECONCILER_OVERRIDE:-$(jqr -r '.reconciler.name // "claude"' "$CONFIG")}"
+cmd_for() { jqr -r --arg n "$1" '.reviewers[] | select(.name==$n) | .cmd' "$CONFIG"; }
+INSTRUCTION_TMPL="$(jqr -r '.instruction' "$CONFIG")"
+[ -n "$INSTRUCTION_TMPL" ] && [ "$INSTRUCTION_TMPL" != "null" ] || die "config has no 'instruction'"
+
+# instruction with file paths substituted (Windows paths for the Windows CLIs)
+instr_for() {
+  local out="$RUN/$1.json" s="$INSTRUCTION_TMPL"
+  s="${s//\{DIFF\}/$(winpath "$DIFF")}"
+  s="${s//\{PROMPT\}/$(winpath "$PROMPT")}"
+  s="${s//\{OUT\}/$(winpath "$out")}"
+  printf '%s' "$s"
+}
 
 echo "› backend: $BACKEND    reviewers: ${NAMES[*]}    reconciler: $RECONCILER"
 echo "› diff: $(wc -l < "$DIFF") lines    workspace: $RUN"
 
 # ---- write one runnable script per reviewer ---------------------------------
-# (avoids all cross-shell quoting issues; each pane just runs `bash <script>`)
+# Each pane just runs `bash <script>`; the agent writes its findings to $RUN/<name>.json.
 declare -a SCRIPTS=()
 for name in "${NAMES[@]}"; do
   tmpl="$(cmd_for "$name")"
   [ -n "$tmpl" ] && [ "$tmpl" != "null" ] || die "no command configured for reviewer '$name'"
   out="$RUN/$name.json"
-  cmd="${tmpl//\{PROMPT\}/$PROMPT}"; cmd="${cmd//\{OUT\}/$out}"
+  instr="$(instr_for "$name")"
+  case "$instr" in *\'*) die "instruction must not contain single quotes";; esac
+  cmd="${tmpl//\{INSTR\}/\'$instr\'}"; cmd="${cmd//\{OUT\}/$out}"
   script="$RUN/run-$name.sh"
   {
     echo "#!/usr/bin/env bash"
     echo "set +e"
+    echo "cd '$START_DIR'"
     echo "$cmd"
     echo "rc=\$?"
-    echo "echo \"--- $name exited \$rc ---\""
-    echo "touch '$out.done'"
+    echo "echo \"\$rc\" > '$out.rc'"
+    echo "echo \"--- $name done (exit \$rc) — findings: $out ---\""
   } > "$script"
   SCRIPTS+=("$script")
 done
 
 # ---- launch reviewers -------------------------------------------------------
-launch_tmux() {
-  SESSION="mreview-$$"
-  tmux new-session -d -s "$SESSION" -n review "bash '${SCRIPTS[0]}'"
-  for i in $(seq 1 $(( ${#SCRIPTS[@]} - 1 )) ); do
-    tmux split-window -t "$SESSION" "bash '${SCRIPTS[$i]}'"
-    tmux select-layout -t "$SESSION" tiled >/dev/null
+declare -A PANES=()
+declare -a NONE_PIDS=()
+TMUX_SESSION=""
+
+launch_none() {
+  echo "› backend 'none' — running ${#NAMES[@]} reviewers as background jobs (logs: $RUN/<name>.log)"
+  local i
+  for i in "${!NAMES[@]}"; do
+    bash "${SCRIPTS[$i]}" > "$RUN/${NAMES[$i]}.log" 2>&1 &
+    NONE_PIDS+=("$!")
   done
-  echo "› tmux session '$SESSION' — attach with:  tmux attach -t $SESSION"
 }
 
 launch_wezterm() {
-  # Anchor on the current pane ($WEZTERM_PANE when run inside WezTerm) or the
-  # first pane WezTerm reports. `spawn` needs a focused pane; `split-pane` with
-  # an explicit --pane-id works even when invoked from outside WezTerm.
-  local bash_win anchor winscript newpane
+  local bash_win anchor newpane i
   bash_win="$(cygpath -w "$(command -v bash)")"
   anchor="${WEZTERM_PANE:-}"
-  if [ -z "$anchor" ]; then
-    anchor="$(wez list --format json 2>/dev/null | jq -r '.[0].pane_id // empty')"
-  fi
+  [ -z "$anchor" ] && anchor="$(wez list --format json 2>/dev/null | jqr -r '.[0].pane_id // empty')"
   [ -n "$anchor" ] || die "wezterm: could not determine a target pane (run from inside WezTerm)"
-  for s in "${SCRIPTS[@]}"; do
-    winscript="$(cygpath -m "$s")"
-    newpane="$(wez split-pane --pane-id "$anchor" -- "$bash_win" -l "$winscript")"
-    [ -n "$newpane" ] && anchor="$newpane"   # cascade so panes don't all halve one
+  for i in "${!NAMES[@]}"; do
+    newpane="$(wez split-pane --pane-id "$anchor" -- "$bash_win" -l "$(cygpath -m "${SCRIPTS[$i]}")")"
+    [ -n "$newpane" ] || die "wezterm: failed to spawn pane for '${NAMES[$i]}'"
+    PANES["${NAMES[$i]}"]="$newpane"; anchor="$newpane"
   done
-  echo "› wezterm: ${#SCRIPTS[@]} panes spawned"
+  echo "› wezterm: ${#NAMES[@]} panes spawned"
 }
 
-launch_none() {
-  echo "› backend 'none' — running reviewers as background jobs"
-  for s in "${SCRIPTS[@]}"; do bash "$s" >/dev/null 2>&1 & done
+launch_tmux() {
+  local i
+  TMUX_SESSION="mreview-$$"
+  tmux new-session -d -s "$TMUX_SESSION" -n review "bash '${SCRIPTS[0]}'"
+  PANES["${NAMES[0]}"]="$TMUX_SESSION"
+  for i in $(seq 1 $(( ${#SCRIPTS[@]} - 1 )) ); do
+    tmux split-window -t "$TMUX_SESSION" "bash '${SCRIPTS[$i]}'"
+    tmux select-layout -t "$TMUX_SESSION" tiled >/dev/null
+  done
+  echo "› tmux session '$TMUX_SESSION' — attach: tmux attach -t $TMUX_SESSION"
 }
 
 case "$BACKEND" in
-  tmux)    launch_tmux;;
-  wezterm) launch_wezterm;;
   none)    launch_none;;
+  wezterm) launch_wezterm;;
+  tmux)    launch_tmux;;
 esac
 
-# ---- wait for all reviewers -------------------------------------------------
+# ---- wait for each reviewer to write valid JSON -----------------------------
 echo -n "› waiting for reviewers"
-elapsed=0
+elapsed=0; TIMED_OUT=0
 while :; do
-  done_count=0
-  for name in "${NAMES[@]}"; do [ -f "$RUN/$name.json.done" ] && done_count=$((done_count+1)); done
-  [ "$done_count" -ge "${#NAMES[@]}" ] && break
-  [ "$elapsed" -ge "$TIMEOUT" ] && { echo " timeout"; break; }
-  sleep 3; elapsed=$((elapsed+3)); echo -n "."
+  finished=0; valid=0
+  for name in "${NAMES[@]}"; do
+    [ -f "$RUN/$name.json.rc" ] && finished=$((finished+1))
+    jqr -e . "$RUN/$name.json" >/dev/null 2>&1 && valid=$((valid+1))
+  done
+  # stop as soon as every reviewer has finished (wrote its .rc), pass or fail —
+  # don't block the full timeout on a reviewer that crashed without valid JSON.
+  [ "$finished" -ge "${#NAMES[@]}" ] && break
+  [ "$elapsed" -ge "$TIMEOUT" ] && { echo " timeout"; TIMED_OUT=1; break; }
+  sleep 5; elapsed=$((elapsed+5)); echo -n "."
 done
-echo " ($done_count/${#NAMES[@]} done)"
-[ "$BACKEND" = "tmux" ] && tmux kill-session -t "$SESSION" 2>/dev/null || true
+echo " ($valid/${#NAMES[@]} produced valid JSON, $finished/${#NAMES[@]} finished)"
+
+# ---- clean up reviewers -----------------------------------------------------
+if [ "$BACKEND" = "none" ]; then
+  [ "$TIMED_OUT" -eq 1 ] && for p in "${NONE_PIDS[@]}"; do kill "$p" 2>/dev/null || true; done
+elif [ "$BACKEND" = "wezterm" ]; then
+  for name in "${NAMES[@]}"; do wez kill-pane --pane-id "${PANES[$name]}" >/dev/null 2>&1 || true; done
+elif [ "$BACKEND" = "tmux" ] && [ -n "$TMUX_SESSION" ]; then
+  tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+fi
+
+# ---- fan-out-only mode (e.g. driven by the /multi-review skill) -------------
+# Skip the headless reconcile; just report where each reviewer's JSON landed so a
+# caller (a Claude session) can read them and reconcile/validate itself.
+if [ "$NO_RECONCILE" -eq 1 ]; then
+  echo "› fan-out only (--no-reconcile). Reviewer findings:"
+  echo "WORKSPACE=$RUN"
+  echo "DIFF=$DIFF"
+  for name in "${NAMES[@]}"; do
+    if jqr -e . "$RUN/$name.json" >/dev/null 2>&1; then echo "FINDINGS[$name]=$RUN/$name.json"
+    else echo "FAILED[$name]=$RUN/$name.log"; fi
+  done
+  exit 0
+fi
 
 # ---- assemble reconcile input -----------------------------------------------
 RECON_IN="$RUN/_reconcile_input.md"
 cat "$RECONCILE_PROMPT" > "$RECON_IN"
 got=0
 for name in "${NAMES[@]}"; do
-  if [ -s "$RUN/$name.json" ]; then
-    { echo; echo "### reviewer: $name"; cat "$RUN/$name.json"; echo; } >> "$RECON_IN"
+  f="$RUN/$name.json"
+  if jqr -e . "$f" >/dev/null 2>&1; then
+    { echo; echo "### reviewer: $name"; cat "$f"; echo; } >> "$RECON_IN"
     got=$((got+1))
   else
-    echo "  ! $name produced no output" >&2
+    rc="$(cat "$RUN/$name.json.rc" 2>/dev/null || echo '?')"
+    echo "  ! $name produced no valid JSON (exit $rc) — check its pane / $f" >&2
   fi
 done
-[ "$got" -gt 0 ] || die "no reviewer produced output — check $RUN/*.json"
+[ "$got" -gt 0 ] || die "no reviewer produced valid JSON — check $RUN/*.json"
 
-# ---- reconcile --------------------------------------------------------------
-rtmpl="$(cmd_for "$RECONCILER")"
-[ -n "$rtmpl" ] && [ "$rtmpl" != "null" ] || die "reconciler '$RECONCILER' has no command in config"
-rcmd="${rtmpl//\{PROMPT\}/$RECON_IN}"; rcmd="${rcmd//\{OUT\}/$FINAL}"
+# ---- reconcile (headless) ---------------------------------------------------
+RTMPL="$(jqr -r '.reconciler.cmd' "$CONFIG")"
+[ -n "$RTMPL" ] && [ "$RTMPL" != "null" ] || die "config has no reconciler.cmd"
+rcmd="${RTMPL//\{PROMPT\}/$RECON_IN}"; rcmd="${rcmd//\{OUT\}/$FINAL}"
 echo "› reconciling $got reviews with $RECONCILER"
 bash -c "$rcmd" >/dev/null
-[ -s "$FINAL" ] || die "reconciler produced no output"
+
+jqr -e . "$FINAL" >/dev/null 2>&1 || die "reconciler output is not valid JSON: $FINAL"
 
 echo
 echo "================ COMBINED REVIEW ================"
-cat "$FINAL"
+jqr -r '.body, "",
+  "Verdict: \(.event)   (\(.comments | length) inline comment(s))", "",
+  (.comments[] | "• \(.path):\(.line) [\(.side)]\n\(.body)\n")' "$FINAL"
 echo "================================================"
 echo "› saved: $FINAL"
 
@@ -217,6 +280,8 @@ echo "› saved: $FINAL"
 if [ "$POST" -eq 1 ]; then
   [ -n "$PR" ] || die "--post requires a PR number"
   need gh
-  gh pr review "$PR" --comment --body-file "$FINAL"
-  echo "› posted review to PR #$PR"
+  read -r OWNER REPO < <(gh repo view --json owner,name -q '.owner.login + " " + .name' | tr -d '\r')
+  [ -n "$OWNER" ] && [ -n "$REPO" ] || die "could not resolve owner/repo via gh"
+  gh api "repos/$OWNER/$REPO/pulls/$PR/reviews" --input "$FINAL" >/dev/null
+  echo "› posted review to $OWNER/$REPO #$PR (inline comments via reviews API)"
 fi

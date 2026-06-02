@@ -1,26 +1,30 @@
 {
-  "_comment": "Each reviewer runs in its own tmux pane. {PROMPT} = path to the prompt+diff file, {OUT} = path the reviewer must write its JSON findings to. The command must read {PROMPT} and write findings to {OUT}. Toggle with 'enabled'. 'reconciler' names the reviewer used to merge all findings into the final review.",
+  "_comment": "Multi-CLI review. Each reviewer runs a ONE-SHOT command in its own pane (WezTerm/tmux). The pane gives the CLI a real terminal (some CLIs, e.g. agy/Antigravity, render only to a TTY and emit nothing to a pipe). The command is the CLI's non-interactive 'print' mode given the shared 'instruction', which tells the agent to review the diff and WRITE its JSON findings to {OUT} using its own file-write tool (we read that file, not stdout). Placeholders: {INSTR} = the instruction with paths substituted; the instruction itself uses {DIFF} (diff path), {PROMPT} (criteria+schema path), {OUT} (findings output path). Reviewers run with permissions bypassed so the file write isn't blocked. 'reconciler' runs headless (stdin) to merge findings.",
   "reviewers": [
     {
       "name": "claude",
       "enabled": true,
-      "cmd": "claude -p \"$(cat {PROMPT})\" | tee {OUT}"
-    },
-    {
-      "name": "codex",
-      "enabled": true,
-      "cmd": "codex exec \"$(cat {PROMPT})\" | tee {OUT}"
+      "cmd": "claude -p {INSTR} --dangerously-skip-permissions"
     },
     {
       "name": "agy",
+      "enabled": true,
+      "cmd": "agy --print {INSTR} --dangerously-skip-permissions"
+    },
+    {
+      "name": "codex",
       "enabled": false,
-      "cmd": "agy -p \"$(cat {PROMPT})\" | tee {OUT}"
+      "cmd": "codex exec {INSTR} --dangerously-bypass-approvals-and-sandbox"
     },
     {
       "name": "gemini",
       "enabled": false,
-      "cmd": "gemini -p \"$(cat {PROMPT})\" | tee {OUT}"
+      "cmd": "gemini -p {INSTR} --yolo"
     }
   ],
-  "reconciler": "claude"
+  "instruction": "Review the unified diff in the file {DIFF}. Follow the review criteria and the STRICT JSON output schema in the file {PROMPT}. Do NOT post anything to GitHub and do NOT modify any source files. Write ONLY your findings, as a single JSON object matching that schema, to the file {OUT}, creating it (overwrite if it exists). That file is your only deliverable.",
+  "reconciler": {
+    "name": "claude",
+    "cmd": "cat \"{PROMPT}\" | claude -p --dangerously-skip-permissions | tee \"{OUT}\""
+  }
 }
