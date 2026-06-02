@@ -19,7 +19,7 @@
     },
     {
       "name": "gemini",
-      "enabled": false,
+      "enabled": true,
       "cmd": "gemini -p {INSTR} --yolo"
     }
   ],
