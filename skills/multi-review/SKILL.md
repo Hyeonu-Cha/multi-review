@@ -7,7 +7,7 @@ description: Multi-model unified PR/diff code review. Fans a diff out to externa
 
 You orchestrate several AI-CLI reviewers **plus your own review** of a PR or diff, reconcile everything into ONE review, validate it against the diff, and optionally post it. You are both an independent reviewer **and** the reconciler — do not rely on a separate `claude -p` reconcile pass.
 
-`TOOL_DIR=/c/Users/ericc/EricVault/Personal/code-review-mcp` (the engine + `config/reviewers.json` live here).
+`TOOL_DIR=/c/Users/ericc/EricVault/Personal/multi-review` (the engine + `config/reviewers.json` live here).
 
 ## 1. Resolve the target
 - A PR number → review that PR (needs `gh` access to the repo).
