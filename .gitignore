@@ -1,2 +1,5 @@
 # per-run reviewer outputs / diffs / generated reviews
 out/
+
+# local tooling artifacts (code-review-graph plugin, etc.)
+cache/

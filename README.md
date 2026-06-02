@@ -14,16 +14,23 @@ Goal: a self-hosted replacement for Copilot review that cross-checks multiple mo
 
 ```
 multi-review <PR>                         (or --diff file / current branch vs --base)
-   │  get diff  →  build shared review prompt
-   ├─ WezTerm pane: claude  → claude.json  ┐
-   ├─ WezTerm pane: codex   → codex.json   ├─ structured findings (JSON), not screen-scraped
-   ├─ WezTerm pane: agy     → agy.json     ┘
-   └─ reconcile pass (one CLI) → review.md  →  optional `gh pr review`
+   │  get diff  →  build criteria+schema file
+   ├─ WezTerm pane: claude (interactive) ──send instruction──▶ claude.json ┐
+   ├─ WezTerm pane: agy    (interactive) ──send instruction──▶ agy.json    ├─ JSON findings
+   ├─ WezTerm pane: …      (interactive) ──send instruction──▶ ….json      ┘
+   └─ headless reconcile pass → review.json  →  optional inline post via reviews API
 ```
 
-Each reviewer writes JSON findings to a file (reliable), while the WezTerm panes let you
-**watch the models work live**. A final reconcile pass merges duplicates, boosts
-issues multiple models agree on, drops noise, and ranks by severity.
+Each reviewer runs as a **real interactive CLI in its own WezTerm pane**, using its own
+native code-review skill and tools — so you watch the models work live. The orchestrator
+sends each pane an instruction (via `wezterm send-text`) telling it to review the diff and
+**write its JSON findings to a file** with its own file-write tool (reliable, no
+screen-scraping). A final headless reconcile pass merges duplicates, boosts issues
+multiple models agree on, drops noise, and ranks by severity.
+
+> Reviewers run with permission prompts disabled (`--dangerously-skip-permissions` etc.)
+> so the file write isn't blocked — scope the instruction to "review + write JSON, do not
+> modify source or post to GitHub", as the default config does.
 
 ## Requirements (Windows)
 
@@ -54,8 +61,8 @@ shouldn't travel between PCs), so expect to install + sign in once per machine.
 
 No bundled doctor command yet — check manually in Git Bash:
 `bash --version`, `jq --version`, `wezterm --version`, and that each enabled reviewer
-CLI runs (e.g. `claude --version`). If WezTerm isn't available, `--no-tmux` runs the
-reviewers as background jobs (no live panes) as a fallback.
+CLI runs (e.g. `claude --version`). Reviewers run interactively in panes, so a running
+WezTerm window (or tmux on Linux/WSL) is required — there is no headless fallback.
 
 ## Usage
 
@@ -66,36 +73,46 @@ bin/multi-review --base origin/main # review current branch vs base (default)
 
 bin/multi-review 42 --reviewers claude,agy   # override reviewer set
 bin/multi-review 42 --post                   # post combined review to the PR
-bin/multi-review 42 --no-tmux                # background jobs instead of panes
+bin/multi-review 42 --timeout 1200           # wait longer for reviewers to finish
 ```
 
-Output is printed and saved to `out/<timestamp>/review.md`.
+Output is printed and saved to `out/<timestamp>/review.json` (a GitHub reviews-API
+payload). `--post` sends it to the PR as **inline comments** via
+`gh api repos/{owner}/{repo}/pulls/{number}/reviews` (one comment per finding, on its
+specific line), with `event` set to `REQUEST_CHANGES` when any CRITICAL/HIGH finding
+exists, else `COMMENT`.
 
 ## Configuration — `config/reviewers.json`
 
-Each reviewer is a name + a command template. Placeholders:
-
-- `{PROMPT}` — file containing the review prompt **+ the diff**
-- `{OUT}` — file the reviewer must write its JSON findings to
+Each reviewer has a `name`, an `enabled` toggle, a `launch` command (the CLI started
+**interactively** with permission prompts disabled), and a `ready_wait` (seconds to let
+it boot before the instruction is sent):
 
 ```json
-{ "name": "claude", "enabled": true, "cmd": "claude -p \"$(cat {PROMPT})\" | tee {OUT}" }
+{ "name": "claude", "enabled": true, "launch": "claude --dangerously-skip-permissions", "ready_wait": 8 }
 ```
 
-Toggle reviewers with `enabled`, pick the merge model with `reconciler`.
-**Adjust the `cmd` flags to match each CLI's real headless/print mode** — these are
-sensible defaults but each CLI evolves (e.g. `agy` non-interactive flags).
+A shared `instruction` (top level) is sent to every pane. Placeholders:
 
-## Billing note
+- `{DIFF}` — path to the diff
+- `{PROMPT}` — path to the criteria + JSON-schema file (`prompts/review.md` + the diff)
+- `{OUT}` — path the agent must write its JSON findings to
 
-If you authenticate the CLIs with your **subscription** (e.g. `claude` via OAuth login),
-runs draw from your plan's rate limits — no per-token charge. If `ANTHROPIC_API_KEY` is
-set in the environment it **overrides** the subscription and bills per token, so unset it
-for subscription-based runs.
+The `reconciler` runs **headless** (stdin) to merge the findings:
+
+```json
+"reconciler": { "name": "claude", "cmd": "cat {PROMPT} | claude -p | tee {OUT}" }
+```
+
+Toggle reviewers with `enabled`. **Tune `launch` / `ready_wait` per CLI** — each CLI's
+interactive flags and boot time differ, and `ready_wait` must be long enough that the
+prompt is ready before the instruction is sent.
 
 ## Status
 
-Windows/WezTerm is the supported target at this stage. The WezTerm pane-spawn +
-completion-detection mechanism is verified working on Windows (Git Bash). End-to-end
-review still needs the reviewer CLIs installed and authenticated; the `cmd` flag defaults
-in `reviewers.json` may need tuning per CLI version (e.g. `agy` non-interactive flags).
+Windows/WezTerm is the supported target. The CRLF-safe config parsing, headless reconcile
+(claude), JSON-payload output, and inline `--post` are verified working on Windows (Git
+Bash). The **interactive pane-driving** path (spawn → `send-text` → agent writes JSON) is
+new and must be exercised from inside a real WezTerm window; expect to tune each reviewer's
+`launch` flags, `ready_wait`, and the `instruction` per CLI. `agy`'s headless `-p` mode was
+unreliable, which is why reviewers now run interactively.

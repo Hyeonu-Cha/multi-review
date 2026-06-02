@@ -1,26 +1,34 @@
 {
-  "_comment": "Each reviewer runs in its own tmux pane. {PROMPT} = path to the prompt+diff file, {OUT} = path the reviewer must write its JSON findings to. The command must read {PROMPT} and write findings to {OUT}. Toggle with 'enabled'. 'reconciler' names the reviewer used to merge all findings into the final review.",
+  "_comment": "Interactive multi-CLI review. Each reviewer is launched as a real interactive CLI in its own WezTerm pane (so you watch it work and it uses its own native code-review skill + tools). The orchestrator sends 'instruction' to the pane via wezterm send-text; the agent then writes its findings JSON to {OUT} using its own file-write tool. Placeholders in 'instruction': {DIFF}=path to the diff, {PROMPT}=path to the criteria+schema file, {OUT}=path the agent must write its JSON findings to. 'launch' must start the CLI in interactive mode with permission prompts disabled (so the file write isn't blocked). 'ready_wait' = seconds to let the CLI boot before sending the instruction. The 'reconciler' runs headless (stdin) to merge all findings into the final review.",
   "reviewers": [
     {
       "name": "claude",
       "enabled": true,
-      "cmd": "claude -p \"$(cat {PROMPT})\" | tee {OUT}"
-    },
-    {
-      "name": "codex",
-      "enabled": true,
-      "cmd": "codex exec \"$(cat {PROMPT})\" | tee {OUT}"
+      "launch": "claude --dangerously-skip-permissions",
+      "ready_wait": 8
     },
     {
       "name": "agy",
+      "enabled": true,
+      "launch": "agy --dangerously-skip-permissions",
+      "ready_wait": 12
+    },
+    {
+      "name": "codex",
       "enabled": false,
-      "cmd": "agy -p \"$(cat {PROMPT})\" | tee {OUT}"
+      "launch": "codex --dangerously-bypass-approvals-and-sandbox",
+      "ready_wait": 10
     },
     {
       "name": "gemini",
       "enabled": false,
-      "cmd": "gemini -p \"$(cat {PROMPT})\" | tee {OUT}"
+      "launch": "gemini --yolo",
+      "ready_wait": 10
     }
   ],
-  "reconciler": "claude"
+  "instruction": "You are a code reviewer. Use your own code-review skill and judgment to review the unified diff in the file {DIFF}. Follow the review criteria and the STRICT JSON output schema described in {PROMPT}. Do NOT post anything to GitHub and do NOT modify any source files. Write ONLY your findings, as a single JSON object matching that schema, to the file {OUT} (create it; overwrite if it exists). Once {OUT} contains valid JSON, your task is complete.",
+  "reconciler": {
+    "name": "claude",
+    "cmd": "cat {PROMPT} | claude -p | tee {OUT}"
+  }
 }
