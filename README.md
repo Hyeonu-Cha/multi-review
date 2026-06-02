@@ -15,21 +15,23 @@ Goal: a self-hosted replacement for Copilot review that cross-checks multiple mo
 ```
 multi-review <PR>                         (or --diff file / current branch vs --base)
    │  get diff  →  build criteria+schema file
-   ├─ WezTerm pane: claude (interactive) ──send instruction──▶ claude.json ┐
-   ├─ WezTerm pane: agy    (interactive) ──send instruction──▶ agy.json    ├─ JSON findings
-   ├─ WezTerm pane: …      (interactive) ──send instruction──▶ ….json      ┘
+   ├─ WezTerm pane: claude -p '<instruction>'  ──▶ claude.json ┐
+   ├─ WezTerm pane: agy --print '<instruction>' ──▶ agy.json    ├─ JSON findings
+   ├─ WezTerm pane: …          '<instruction>'  ──▶ ….json      ┘
    └─ headless reconcile pass → review.json  →  optional inline post via reviews API
 ```
 
-Each reviewer runs as a **real interactive CLI in its own WezTerm pane**, using its own
-native code-review skill and tools — so you watch the models work live. The orchestrator
-sends each pane an instruction (via `wezterm send-text`) telling it to review the diff and
-**write its JSON findings to a file** with its own file-write tool (reliable, no
-screen-scraping). A final headless reconcile pass merges duplicates, boosts issues
-multiple models agree on, drops noise, and ranks by severity.
+Each reviewer runs a **one-shot non-interactive command in its own pane**, using its own
+native code-review skill and tools — so you watch the models work live. The pane gives the
+CLI a **real terminal**, which matters: some CLIs (e.g. `agy`/Antigravity) render only to a
+TTY and emit **nothing** to a pipe, so stdout redirection can't capture them. Instead, the
+shared instruction tells each agent to **write its JSON findings to a file** with its own
+file-write tool — we read that file, not stdout (reliable, no screen-scraping). A final
+headless reconcile pass merges duplicates, boosts issues multiple models agree on, drops
+noise, and ranks by severity.
 
-> Reviewers run with permission prompts disabled (`--dangerously-skip-permissions` etc.)
-> so the file write isn't blocked — scope the instruction to "review + write JSON, do not
+> Reviewers run with permissions bypassed (`--dangerously-skip-permissions` etc.) so the
+> file write isn't blocked — the instruction is scoped to "review + write JSON, don't
 > modify source or post to GitHub", as the default config does.
 
 ## Requirements (Windows)
@@ -84,15 +86,15 @@ exists, else `COMMENT`.
 
 ## Configuration — `config/reviewers.json`
 
-Each reviewer has a `name`, an `enabled` toggle, a `launch` command (the CLI started
-**interactively** with permission prompts disabled), and a `ready_wait` (seconds to let
-it boot before the instruction is sent):
+Each reviewer has a `name`, an `enabled` toggle, and a `cmd` — the CLI's one-shot
+"print" mode invoked with the instruction. `{INSTR}` is replaced with the shared
+`instruction` (paths substituted, single-quoted automatically):
 
 ```json
-{ "name": "claude", "enabled": true, "launch": "claude --dangerously-skip-permissions", "ready_wait": 8 }
+{ "name": "claude", "enabled": true, "cmd": "claude -p {INSTR} --dangerously-skip-permissions" }
 ```
 
-A shared `instruction` (top level) is sent to every pane. Placeholders:
+The shared `instruction` (top level) tells the agent what to do. Placeholders:
 
 - `{DIFF}` — path to the diff
 - `{PROMPT}` — path to the criteria + JSON-schema file (`prompts/review.md` + the diff)
@@ -104,15 +106,15 @@ The `reconciler` runs **headless** (stdin) to merge the findings:
 "reconciler": { "name": "claude", "cmd": "cat {PROMPT} | claude -p | tee {OUT}" }
 ```
 
-Toggle reviewers with `enabled`. **Tune `launch` / `ready_wait` per CLI** — each CLI's
-interactive flags and boot time differ, and `ready_wait` must be long enough that the
-prompt is ready before the instruction is sent.
+Toggle reviewers with `enabled`. **Tune each `cmd` per CLI** — the non-interactive flag
+and permission-bypass flag differ (`claude -p … --dangerously-skip-permissions`,
+`agy --print … --dangerously-skip-permissions`, `codex exec …`, `gemini -p … --yolo`).
 
 ## Status
 
-Windows/WezTerm is the supported target. The CRLF-safe config parsing, headless reconcile
-(claude), JSON-payload output, and inline `--post` are verified working on Windows (Git
-Bash). The **interactive pane-driving** path (spawn → `send-text` → agent writes JSON) is
-new and must be exercised from inside a real WezTerm window; expect to tune each reviewer's
-`launch` flags, `ready_wait`, and the `instruction` per CLI. `agy`'s headless `-p` mode was
-unreliable, which is why reviewers now run interactively.
+Windows/WezTerm is the supported target. CRLF-safe config parsing, headless reconcile
+(claude), JSON-payload output, and inline `--post` are verified on Windows (Git Bash).
+Reviewers run their CLI's one-shot print mode **in a pane** because some CLIs (notably
+`agy`/Antigravity) render only to a TTY and emit nothing to a pipe — so output is captured
+via the file the agent writes, not stdout. The pane-spawn path is new; exercise it from
+inside a real WezTerm window and tune each reviewer's `cmd` per CLI.

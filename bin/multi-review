@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 #
-# multi-review — fan a PR diff to several AI-CLI reviewers, each running as a real
-# INTERACTIVE CLI in its own pane (using its native code-review skill), then reconcile
-# their findings into one review.
+# multi-review — fan a PR diff to several AI-CLI reviewers, each running a one-shot
+# review in its own pane, then reconcile their findings into one review.
 #
-# Each reviewer is launched interactively in a pane; the orchestrator sends it an
-# instruction (via the pane) telling it to review the diff and WRITE its JSON findings
-# to a file. A final headless reconcile pass merges those files into one review.
+# Each reviewer runs its CLI's non-interactive "print" mode in a pane (so the CLI has
+# a real terminal — some, e.g. agy/Antigravity, render only to a TTY and write nothing
+# to a pipe). The shared instruction tells the agent to review the diff and WRITE its
+# JSON findings to a file with its own tools; we read that file (not stdout). A final
+# headless reconcile pass merges the files into one review.
 #
 # Usage:
 #   multi-review [PR_NUMBER]                 review a GitHub PR (via gh)
@@ -20,7 +21,7 @@
 #   --post              post the final review to the PR (needs PR_NUMBER + gh)
 #   --timeout SECONDS   per-run wait for reviewers to write their JSON (default 900)
 #
-# Backends (interactive reviewers need a pane multiplexer):
+# Backends (reviewers need a pane/TTY):
 #   wezterm — native Windows. Run this FROM INSIDE a WezTerm window.
 #   tmux    — Linux/WSL. One tmux pane per reviewer.
 #
@@ -72,7 +73,7 @@ wez_ok() { [ -n "$WEZTERM_BIN" ] && wez list >/dev/null 2>&1; }
 if [ "$BACKEND" = "auto" ]; then
   if wez_ok; then BACKEND="wezterm"
   elif command -v tmux >/dev/null 2>&1; then BACKEND="tmux"
-  else die "no interactive backend: start a WezTerm window (Windows) or install tmux (Linux/WSL)"; fi
+  else die "no pane backend: start a WezTerm window (Windows) or install tmux (Linux/WSL)"; fi
 fi
 case "$BACKEND" in
   wezterm) wez_ok || die "wezterm backend: no running WezTerm instance reachable — run this from inside a WezTerm window";;
@@ -101,7 +102,6 @@ fi
 [ -s "$DIFF" ] || die "diff is empty — nothing to review"
 
 # ---- build the criteria+schema file the agents read -------------------------
-# (review.md = criteria + STRICT JSON schema; the diff is appended for convenience)
 cat "$REVIEW_PROMPT" "$DIFF" > "$PROMPT"
 
 # ---- resolve reviewer set ---------------------------------------------------
@@ -113,14 +113,13 @@ fi
 [ "${#NAMES[@]}" -gt 0 ] || die "no reviewers selected"
 
 RECONCILER="${RECONCILER_OVERRIDE:-$(jqr -r '.reconciler.name // "claude"' "$CONFIG")}"
-launch_for() { jqr -r --arg n "$1" '.reviewers[] | select(.name==$n) | .launch' "$CONFIG"; }
-wait_for()   { jqr -r --arg n "$1" '.reviewers[] | select(.name==$n) | (.ready_wait // 8)' "$CONFIG"; }
+cmd_for() { jqr -r --arg n "$1" '.reviewers[] | select(.name==$n) | .cmd' "$CONFIG"; }
 INSTRUCTION_TMPL="$(jqr -r '.instruction' "$CONFIG")"
 [ -n "$INSTRUCTION_TMPL" ] && [ "$INSTRUCTION_TMPL" != "null" ] || die "config has no 'instruction'"
 
 # instruction with file paths substituted (Windows paths for the Windows CLIs)
 instr_for() {
-  local name="$1" out="$RUN/$1.json" s="$INSTRUCTION_TMPL"
+  local out="$RUN/$1.json" s="$INSTRUCTION_TMPL"
   s="${s//\{DIFF\}/$(winpath "$DIFF")}"
   s="${s//\{PROMPT\}/$(winpath "$PROMPT")}"
   s="${s//\{OUT\}/$(winpath "$out")}"
@@ -130,56 +129,57 @@ instr_for() {
 echo "› backend: $BACKEND    reviewers: ${NAMES[*]}    reconciler: $RECONCILER"
 echo "› diff: $(wc -l < "$DIFF") lines    workspace: $RUN"
 
-# ---- launch interactive reviewers + send them the instruction ---------------
-declare -A PANES=()      # name -> pane/window id
+# ---- write one runnable script per reviewer ---------------------------------
+# Each pane just runs `bash <script>`; the agent writes its findings to $RUN/<name>.json.
+declare -a SCRIPTS=()
+for name in "${NAMES[@]}"; do
+  tmpl="$(cmd_for "$name")"
+  [ -n "$tmpl" ] && [ "$tmpl" != "null" ] || die "no command configured for reviewer '$name'"
+  out="$RUN/$name.json"
+  instr="$(instr_for "$name")"
+  case "$instr" in *\'*) die "instruction must not contain single quotes";; esac
+  cmd="${tmpl//\{INSTR\}/\'$instr\'}"; cmd="${cmd//\{OUT\}/$out}"
+  script="$RUN/run-$name.sh"
+  {
+    echo "#!/usr/bin/env bash"
+    echo "set +e"
+    echo "cd '$START_DIR'"
+    echo "$cmd"
+    echo "rc=\$?"
+    echo "echo \"\$rc\" > '$out.rc'"
+    echo "echo \"--- $name done (exit \$rc) — findings: $out ---\""
+  } > "$script"
+  SCRIPTS+=("$script")
+done
+
+# ---- launch reviewers in panes ----------------------------------------------
+declare -A PANES=()
 TMUX_SESSION=""
 
 launch_wezterm() {
-  local bash_win anchor newpane launch maxwait=0 w
+  local bash_win anchor newpane i
   bash_win="$(cygpath -w "$(command -v bash)")"
   anchor="${WEZTERM_PANE:-}"
   [ -z "$anchor" ] && anchor="$(wez list --format json 2>/dev/null | jqr -r '.[0].pane_id // empty')"
   [ -n "$anchor" ] || die "wezterm: could not determine a target pane (run from inside WezTerm)"
-  # spawn one interactive pane per reviewer
-  for name in "${NAMES[@]}"; do
-    launch="$(launch_for "$name")"
-    [ -n "$launch" ] && [ "$launch" != "null" ] || die "no 'launch' configured for reviewer '$name'"
-    newpane="$(wez split-pane --pane-id "$anchor" -- "$bash_win" -lc "cd '$START_DIR'; exec $launch")"
-    [ -n "$newpane" ] || die "wezterm: failed to spawn pane for '$name'"
-    PANES["$name"]="$newpane"; anchor="$newpane"
-    w="$(wait_for "$name")"; [ "$w" -gt "$maxwait" ] 2>/dev/null && maxwait="$w"
+  for i in "${!NAMES[@]}"; do
+    newpane="$(wez split-pane --pane-id "$anchor" -- "$bash_win" -l "$(cygpath -m "${SCRIPTS[$i]}")")"
+    [ -n "$newpane" ] || die "wezterm: failed to spawn pane for '${NAMES[$i]}'"
+    PANES["${NAMES[$i]}"]="$newpane"; anchor="$newpane"
   done
-  echo "› spawned ${#NAMES[@]} panes; letting CLIs boot (${maxwait}s)…"
-  sleep "$maxwait"
-  # send each reviewer its instruction, then Enter to submit
-  for name in "${NAMES[@]}"; do
-    wez send-text --pane-id "${PANES[$name]}" --no-paste "$(instr_for "$name")"
-    wez send-text --pane-id "${PANES[$name]}" --no-paste $'\r'
-  done
-  echo "› instructions sent to all reviewers"
+  echo "› wezterm: ${#NAMES[@]} panes spawned"
 }
 
 launch_tmux() {
-  local launch maxwait=0 w
+  local i
   TMUX_SESSION="mreview-$$"
-  local first="${NAMES[0]}"
-  tmux new-session -d -s "$TMUX_SESSION" -n review "cd '$START_DIR'; exec $(launch_for "$first")"
-  PANES["$first"]="$TMUX_SESSION:0.0"
-  local idx=0
-  for name in "${NAMES[@]:1}"; do
-    idx=$((idx+1))
-    launch="$(launch_for "$name")"
-    tmux split-window -t "$TMUX_SESSION" "cd '$START_DIR'; exec $launch"
+  tmux new-session -d -s "$TMUX_SESSION" -n review "bash '${SCRIPTS[0]}'"
+  PANES["${NAMES[0]}"]="$TMUX_SESSION"
+  for i in $(seq 1 $(( ${#SCRIPTS[@]} - 1 )) ); do
+    tmux split-window -t "$TMUX_SESSION" "bash '${SCRIPTS[$i]}'"
     tmux select-layout -t "$TMUX_SESSION" tiled >/dev/null
-    PANES["$name"]="$TMUX_SESSION:0.$idx"
   done
-  for name in "${NAMES[@]}"; do w="$(wait_for "$name")"; [ "$w" -gt "$maxwait" ] 2>/dev/null && maxwait="$w"; done
-  echo "› tmux session '$TMUX_SESSION' (attach: tmux attach -t $TMUX_SESSION); booting (${maxwait}s)…"
-  sleep "$maxwait"
-  for name in "${NAMES[@]}"; do
-    tmux send-keys -t "${PANES[$name]}" "$(instr_for "$name")" Enter
-  done
-  echo "› instructions sent to all reviewers"
+  echo "› tmux session '$TMUX_SESSION' — attach: tmux attach -t $TMUX_SESSION"
 }
 
 case "$BACKEND" in
@@ -218,7 +218,8 @@ for name in "${NAMES[@]}"; do
     { echo; echo "### reviewer: $name"; cat "$f"; echo; } >> "$RECON_IN"
     got=$((got+1))
   else
-    echo "  ! $name produced no valid JSON — watch its pane / check $f" >&2
+    rc="$(cat "$RUN/$name.json.rc" 2>/dev/null || echo '?')"
+    echo "  ! $name produced no valid JSON (exit $rc) — check its pane / $f" >&2
   fi
 done
 [ "$got" -gt 0 ] || die "no reviewer produced valid JSON — check $RUN/*.json"
