@@ -4,7 +4,7 @@
   "reviewers": [
     {
       "name": "claude",
-      "enabled": true,
+      "enabled": false,
       "cmd": "claude -p {INSTR} --dangerously-skip-permissions"
     },
     {

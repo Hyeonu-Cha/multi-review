@@ -25,7 +25,7 @@ This runs every reviewer enabled in `$TOOL_DIR/config/reviewers.json` (e.g. `agy
 ```
 WORKSPACE=<dir>   DIFF=<path>   FINDINGS[<name>]=<path>   FAILED[<name>]=<log>
 ```
-- **You are the in-session Claude reviewer (step 4), so avoid double-counting `claude`.** Since `claude` is enabled in config, fanning out with defaults runs a *headless* `claude` reviewer too, and your own pass would then agree with it and inflate confidence. Pass `--reviewers` to exclude it (e.g. `--reviewers agy,codex`) so the external set is models *other than* you, then add your pass in step 4. If you do keep the headless `claude`, treat it as the same voice as yourself — don't let the duplicate raise a finding's `raised by` count.
+- **`claude` is intentionally disabled as a headless reviewer in config — keep it that way.** You (the in-session Claude) ARE the "claude" reviewer, via your own pass in step 4. This uses your innate code-review ability instead of spawning a separate `claude -p` (which would burn the same Claude quota and double-count). The external fan-out is the *other* vendors (agy, codex, gemini). Do not re-enable a headless `claude` reviewer or pass `--reviewers claude`.
 - **Profiles:** the engine appends `config.profile` (e.g. `dotnet`) to the criteria automatically. Pass `--profile <name>` to override, or `--profile none` for generic review.
 - **Untrusted diff:** reviewers run permission-bypassed on an untrusted diff. The instruction/prompt scope them to read-and-write-findings only; if a reviewer log shows it tried to run commands or edit source, drop its findings and tell the user.
 
@@ -34,8 +34,8 @@ WORKSPACE=<dir>   DIFF=<path>   FINDINGS[<name>]=<path>   FAILED[<name>]=<log>
 - Read the `DIFF`.
 - For any `FAILED[<name>]`, glance at its log, note it briefly, and continue — don't block.
 
-## 4. Add your own review pass
-Independently review the DIFF yourself as a senior reviewer, using the criteria in `$TOOL_DIR/prompts/review.md` (active bugs, security, correctness, performance, async/thread-safety, null/validation, config/regression risks) plus any active profile addendum in `$TOOL_DIR/prompts/profiles/` (e.g. `dotnet.md` for migration/anti-pattern checks). Treat yourself as one more reviewer.
+## 4. Add your own review pass (you are the "claude" reviewer)
+This is a **real, independent review — do it before reconciling, not as a rubber-stamp of the others.** Read the DIFF yourself and apply your full code-review ability as a senior reviewer, using the criteria in `$TOOL_DIR/prompts/review.md` (active bugs, security, correctness, performance, async/thread-safety, null/validation, config/regression risks) plus any active profile addendum in `$TOOL_DIR/prompts/profiles/` (e.g. `dotnet.md` for migration/anti-pattern checks). Produce your own findings list with the same fields the external reviewers use. Treat yourself as one more reviewer — claude's voice in the cross-check — then merge in step 5.
 
 ## 5. Reconcile + validate (this is the point of the skill)
 - **Merge duplicates** across the external reviewers and your own; record who raised each (`raised by: …`). Agreement raises confidence.
