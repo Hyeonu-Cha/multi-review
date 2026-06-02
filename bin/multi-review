@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # multi-review — fan a PR diff to several AI-CLI reviewers, each running a one-shot
-# review in its own pane, then reconcile their findings into one review.
+# review (headless background jobs by default), then reconcile findings into one review.
 #
 # Each reviewer runs its CLI's non-interactive "print" mode. The shared instruction
 # tells the agent to review the diff and WRITE its JSON findings to a file with its own
