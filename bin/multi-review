@@ -3,11 +3,11 @@
 # multi-review — fan a PR diff to several AI-CLI reviewers, each running a one-shot
 # review in its own pane, then reconcile their findings into one review.
 #
-# Each reviewer runs its CLI's non-interactive "print" mode in a pane (so the CLI has
-# a real terminal — some, e.g. agy/Antigravity, render only to a TTY and write nothing
-# to a pipe). The shared instruction tells the agent to review the diff and WRITE its
-# JSON findings to a file with its own tools; we read that file (not stdout). A final
-# headless reconcile pass merges the files into one review.
+# Each reviewer runs its CLI's non-interactive "print" mode. The shared instruction
+# tells the agent to review the diff and WRITE its JSON findings to a file with its own
+# tools; we read that file, not stdout (CLIs like agy/Antigravity render only to a TTY
+# and emit nothing to a pipe, but still do file/tool work headless). A final headless
+# reconcile pass merges the files into one review.
 #
 # Usage:
 #   multi-review [PR_NUMBER]                 review a GitHub PR (via gh)
@@ -17,13 +17,14 @@
 # Options:
 #   --reviewers a,b,c   override the enabled reviewers from config
 #   --reconciler NAME   override the reconciler CLI name (must exist in config)
-#   --backend B         pane backend: auto|wezterm|tmux  (default: auto)
+#   --backend B         none|wezterm|tmux  (default: none, headless)
 #   --post              post the final review to the PR (needs PR_NUMBER + gh)
 #   --timeout SECONDS   per-run wait for reviewers to write their JSON (default 900)
 #
-# Backends (reviewers need a pane/TTY):
-#   wezterm — native Windows. Run this FROM INSIDE a WezTerm window.
-#   tmux    — Linux/WSL. One tmux pane per reviewer.
+# Backends:
+#   none    — default. Reviewers run as headless background jobs. No GUI needed.
+#   wezterm — optional, to WATCH live. Run this FROM INSIDE a WezTerm window.
+#   tmux    — optional, to watch live on Linux/WSL.
 #
 set -euo pipefail
 
@@ -46,15 +47,16 @@ need jq
 # ---- parse args -------------------------------------------------------------
 PR=""; DIFF_FILE=""; BASE="origin/main"
 REVIEWERS_OVERRIDE=""; RECONCILER_OVERRIDE=""; POST=0; TIMEOUT=900; BACKEND="auto"
+needval() { [ $# -ge 2 ] || die "missing argument for $1"; }
 while [ $# -gt 0 ]; do
   case "$1" in
-    --diff)       DIFF_FILE="$2"; shift 2;;
-    --base)       BASE="$2"; shift 2;;
-    --reviewers)  REVIEWERS_OVERRIDE="$2"; shift 2;;
-    --reconciler) RECONCILER_OVERRIDE="$2"; shift 2;;
-    --backend)    BACKEND="$2"; shift 2;;
+    --diff)       needval "$@"; DIFF_FILE="$2"; shift 2;;
+    --base)       needval "$@"; BASE="$2"; shift 2;;
+    --reviewers)  needval "$@"; REVIEWERS_OVERRIDE="$2"; shift 2;;
+    --reconciler) needval "$@"; RECONCILER_OVERRIDE="$2"; shift 2;;
+    --backend)    needval "$@"; BACKEND="$2"; shift 2;;
     --post)       POST=1; shift;;
-    --timeout)    TIMEOUT="$2"; shift 2;;
+    --timeout)    needval "$@"; TIMEOUT="$2"; shift 2;;
     -h|--help)    sed -n '2,30p' "$0"; exit 0;;
     -*)           die "unknown option: $1";;
     *)            PR="$1"; shift;;
@@ -70,15 +72,15 @@ WEZTERM_BIN="$(command -v wezterm || true)"
 wez() { MSYS2_ARG_CONV_EXCL='*' "$WEZTERM_BIN" cli --no-auto-start "$@"; }
 wez_ok() { [ -n "$WEZTERM_BIN" ] && wez list >/dev/null 2>&1; }
 
-if [ "$BACKEND" = "auto" ]; then
-  if wez_ok; then BACKEND="wezterm"
-  elif command -v tmux >/dev/null 2>&1; then BACKEND="tmux"
-  else die "no pane backend: start a WezTerm window (Windows) or install tmux (Linux/WSL)"; fi
-fi
+# Default is headless: reviewers run as background jobs and write their findings to
+# files (no terminal needed — even TTY-rendering CLIs like agy do tool/file work
+# headless). wezterm/tmux are opt-in only if you want to WATCH the models work live.
+[ "$BACKEND" = "auto" ] && BACKEND="none"
 case "$BACKEND" in
+  none)    ;;
   wezterm) wez_ok || die "wezterm backend: no running WezTerm instance reachable — run this from inside a WezTerm window";;
   tmux)    need tmux;;
-  *)       die "unknown/unsupported backend: $BACKEND (use wezterm or tmux)";;
+  *)       die "unknown backend: $BACKEND (use none, wezterm, or tmux)";;
 esac
 
 # ---- per-run workspace ------------------------------------------------------
@@ -152,9 +154,19 @@ for name in "${NAMES[@]}"; do
   SCRIPTS+=("$script")
 done
 
-# ---- launch reviewers in panes ----------------------------------------------
+# ---- launch reviewers -------------------------------------------------------
 declare -A PANES=()
+declare -a NONE_PIDS=()
 TMUX_SESSION=""
+
+launch_none() {
+  echo "› backend 'none' — running ${#NAMES[@]} reviewers as background jobs (logs: $RUN/<name>.log)"
+  local i
+  for i in "${!NAMES[@]}"; do
+    bash "${SCRIPTS[$i]}" > "$RUN/${NAMES[$i]}.log" 2>&1 &
+    NONE_PIDS+=("$!")
+  done
+}
 
 launch_wezterm() {
   local bash_win anchor newpane i
@@ -183,26 +195,32 @@ launch_tmux() {
 }
 
 case "$BACKEND" in
+  none)    launch_none;;
   wezterm) launch_wezterm;;
   tmux)    launch_tmux;;
 esac
 
 # ---- wait for each reviewer to write valid JSON -----------------------------
-echo -n "› waiting for reviewers to write findings"
-elapsed=0
+echo -n "› waiting for reviewers"
+elapsed=0; TIMED_OUT=0
 while :; do
-  done_count=0
+  finished=0; valid=0
   for name in "${NAMES[@]}"; do
-    jqr -e . "$RUN/$name.json" >/dev/null 2>&1 && done_count=$((done_count+1))
+    [ -f "$RUN/$name.json.rc" ] && finished=$((finished+1))
+    jqr -e . "$RUN/$name.json" >/dev/null 2>&1 && valid=$((valid+1))
   done
-  [ "$done_count" -ge "${#NAMES[@]}" ] && break
-  [ "$elapsed" -ge "$TIMEOUT" ] && { echo " timeout"; break; }
+  # stop as soon as every reviewer has finished (wrote its .rc), pass or fail —
+  # don't block the full timeout on a reviewer that crashed without valid JSON.
+  [ "$finished" -ge "${#NAMES[@]}" ] && break
+  [ "$elapsed" -ge "$TIMEOUT" ] && { echo " timeout"; TIMED_OUT=1; break; }
   sleep 5; elapsed=$((elapsed+5)); echo -n "."
 done
-echo " ($done_count/${#NAMES[@]} produced valid JSON)"
+echo " ($valid/${#NAMES[@]} produced valid JSON, $finished/${#NAMES[@]} finished)"
 
-# ---- close reviewer panes ---------------------------------------------------
-if [ "$BACKEND" = "wezterm" ]; then
+# ---- clean up reviewers -----------------------------------------------------
+if [ "$BACKEND" = "none" ]; then
+  [ "$TIMED_OUT" -eq 1 ] && for p in "${NONE_PIDS[@]}"; do kill "$p" 2>/dev/null || true; done
+elif [ "$BACKEND" = "wezterm" ]; then
   for name in "${NAMES[@]}"; do wez kill-pane --pane-id "${PANES[$name]}" >/dev/null 2>&1 || true; done
 elif [ "$BACKEND" = "tmux" ] && [ -n "$TMUX_SESSION" ]; then
   tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true

@@ -1,34 +1,32 @@
 # code-review-mcp
 
 Multi-CLI code review. Fan a PR diff out to several AI-CLI reviewers
-(Claude, Codex, Antigravity/`agy`, Gemini, …) running side by side in **WezTerm panes**,
+(Claude, Antigravity/`agy`, Codex, Gemini, …) running **headlessly in parallel**,
 then **reconcile** their findings into one de-duplicated, severity-ranked review.
 
 Goal: a self-hosted replacement for Copilot review that cross-checks multiple models.
 
-> **Platform: Windows (WezTerm).** This is the only supported setup at this stage.
-> The code has a `tmux` backend for Linux/WSL too, but it's untested and undocumented
-> for now.
+> **Headless by default** — reviewers run as background jobs; no GUI needed. Optionally
+> run them in **WezTerm/tmux panes** (`--backend wezterm`) if you want to watch live.
 
 ## How it works
 
 ```
 multi-review <PR>                         (or --diff file / current branch vs --base)
    │  get diff  →  build criteria+schema file
-   ├─ WezTerm pane: claude -p '<instruction>'  ──▶ claude.json ┐
-   ├─ WezTerm pane: agy --print '<instruction>' ──▶ agy.json    ├─ JSON findings
-   ├─ WezTerm pane: …          '<instruction>'  ──▶ ….json      ┘
+   ├─ bg job: claude -p '<instruction>'   ──▶ claude.json ┐
+   ├─ bg job: agy --print '<instruction>' ──▶ agy.json     ├─ JSON findings (files)
+   ├─ bg job: …            '<instruction>' ──▶ ….json      ┘
    └─ headless reconcile pass → review.json  →  optional inline post via reviews API
 ```
 
-Each reviewer runs a **one-shot non-interactive command in its own pane**, using its own
-native code-review skill and tools — so you watch the models work live. The pane gives the
-CLI a **real terminal**, which matters: some CLIs (e.g. `agy`/Antigravity) render only to a
-TTY and emit **nothing** to a pipe, so stdout redirection can't capture them. Instead, the
-shared instruction tells each agent to **write its JSON findings to a file** with its own
-file-write tool — we read that file, not stdout (reliable, no screen-scraping). A final
-headless reconcile pass merges duplicates, boosts issues multiple models agree on, drops
-noise, and ranks by severity.
+Each reviewer runs a **one-shot non-interactive command**, using its own native
+code-review skill and tools. The shared instruction tells each agent to **write its JSON
+findings to a file** with its own file-write tool — we read that file, **not stdout**.
+This matters: some CLIs (e.g. `agy`/Antigravity) render only to a TTY and emit nothing to
+a pipe, but still do file/tool work fine headless — so capturing via the written file
+works without any terminal. A final headless reconcile pass merges duplicates, boosts
+issues multiple models agree on, drops noise, and ranks by severity.
 
 > Reviewers run with permissions bypassed (`--dangerously-skip-permissions` etc.) so the
 > file write isn't blocked — the instruction is scoped to "review + write JSON, don't
@@ -37,11 +35,11 @@ noise, and ranks by severity.
 ## Requirements (Windows)
 
 - **Git for Windows** — provides Git Bash, which supplies `bash` and `cygpath`
-- **WezTerm** — the pane multiplexer (https://wezterm.org)
 - **`jq`** — `winget install jqlang.jq`
 - **`gh`** — only for reviewing/posting to GitHub PRs
-- The reviewer CLIs you enable (`claude`, `codex`, `agy`, `gemini`, …) on your `PATH`,
+- The reviewer CLIs you enable (`claude`, `agy`, `codex`, `gemini`, …) on your `PATH`,
   **each logged in**
+- **WezTerm** — *optional*, only if you want `--backend wezterm` to watch reviewers live
 
 ## Setup on a new Windows PC
 
@@ -49,22 +47,22 @@ The repo is portable — `git clone` brings everything except the host tools and
 logins. Logins are per-machine **by design** (subscriptions / OAuth tokens don't and
 shouldn't travel between PCs), so expect to install + sign in once per machine.
 
-1. Install **Git for Windows**, **WezTerm**, and **`jq`** (see Requirements above).
-2. Install the reviewer CLIs you want (`claude`, `codex`, …) and **log into each**.
+1. Install **Git for Windows** and **`jq`** (see Requirements above).
+2. Install the reviewer CLIs you want (`claude`, `agy`, …) and **log into each**.
 3. Clone the repo:
    ```
    git clone https://github.com/Hyeonu-Cha/code-review-mcp.git
    ```
-4. **Open a WezTerm window**, `cd` into the repo, and run `multi-review` from there.
-   The pane backend splits *that* window into one pane per reviewer, so it must be
-   launched from inside WezTerm — that's how it knows which window to split.
+4. `cd` into the repo (or any repo you want reviewed) and run `multi-review`. No GUI
+   needed — reviewers run headless. (Add `--backend wezterm`, from inside a WezTerm
+   window, only if you want to watch them live.)
 
 ### Verify prerequisites
 
 No bundled doctor command yet — check manually in Git Bash:
-`bash --version`, `jq --version`, `wezterm --version`, and that each enabled reviewer
-CLI runs (e.g. `claude --version`). Reviewers run interactively in panes, so a running
-WezTerm window (or tmux on Linux/WSL) is required — there is no headless fallback.
+`bash --version`, `jq --version`, and that each enabled reviewer CLI runs
+(e.g. `claude --version`, `agy --version`). WezTerm is needed only for the optional
+`--backend wezterm` live view.
 
 ## Usage
 
@@ -112,9 +110,10 @@ and permission-bypass flag differ (`claude -p … --dangerously-skip-permissions
 
 ## Status
 
-Windows/WezTerm is the supported target. CRLF-safe config parsing, headless reconcile
-(claude), JSON-payload output, and inline `--post` are verified on Windows (Git Bash).
-Reviewers run their CLI's one-shot print mode **in a pane** because some CLIs (notably
-`agy`/Antigravity) render only to a TTY and emit nothing to a pipe — so output is captured
-via the file the agent writes, not stdout. The pane-spawn path is new; exercise it from
-inside a real WezTerm window and tune each reviewer's `cmd` per CLI.
+Windows is the supported target. **Verified end-to-end headless on Windows (Git Bash):**
+agy reviews as a background job and writes valid JSON findings; CRLF-safe config parsing;
+JSON-payload output; reconcile + console render; inline `--post`. Reviewers run their CLI's
+one-shot print mode and write findings to a file, so no terminal is needed — even
+TTY-rendering CLIs like `agy`/Antigravity (which emit nothing to a pipe) do file/tool work
+fine headless. Tune each reviewer's `cmd` per CLI as non-interactive flags differ. The
+optional `--backend wezterm`/`tmux` live view spawns one pane per reviewer.

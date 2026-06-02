@@ -25,6 +25,6 @@
   "instruction": "Review the unified diff in the file {DIFF}. Follow the review criteria and the STRICT JSON output schema in the file {PROMPT}. Do NOT post anything to GitHub and do NOT modify any source files. Write ONLY your findings, as a single JSON object matching that schema, to the file {OUT}, creating it (overwrite if it exists). That file is your only deliverable.",
   "reconciler": {
     "name": "claude",
-    "cmd": "cat {PROMPT} | claude -p | tee {OUT}"
+    "cmd": "cat \"{PROMPT}\" | claude -p --dangerously-skip-permissions | tee \"{OUT}\""
   }
 }
