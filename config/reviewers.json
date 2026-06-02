@@ -14,12 +14,12 @@
     },
     {
       "name": "codex",
-      "enabled": false,
+      "enabled": true,
       "cmd": "codex exec {INSTR} --dangerously-bypass-approvals-and-sandbox"
     },
     {
       "name": "gemini",
-      "enabled": false,
+      "enabled": true,
       "cmd": "gemini -p {INSTR} --yolo"
     }
   ],
