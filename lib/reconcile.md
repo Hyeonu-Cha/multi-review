@@ -13,9 +13,14 @@ JSON payload ready to POST to the GitHub reviews API**.
   and lower its weight.
 - **Drop noise**: remove false positives, pure style nits, and low-confidence items only
   one reviewer raised that you judge incorrect.
+- **Validate against the diff**: the unified diff is appended at the end of this input.
+  For every finding, confirm its `file` + `line` + `side` actually appear in the diff
+  (added/unchanged → `RIGHT` + new-file line; removed → `LEFT` + old-file line). Drop or
+  correct any finding whose line is not present — this kills hallucinated lines and avoids
+  422 errors when posting.
 - **Rank**: order comments by severity then confidence (most important first).
-- **Preserve line targeting**: carry each finding's `file`→`path`, `line`, `side`, and
-  any `start_line`/`start_side` through unchanged so the comment lands on the right line.
+- **Preserve line targeting**: carry each validated finding's `file`→`path`, `line`,
+  `side`, and any `start_line`/`start_side` through so the comment lands on the right line.
 
 ## Output format — STRICT
 
@@ -40,7 +45,8 @@ be a valid payload for `POST /repos/{owner}/{repo}/pulls/{number}/reviews`:
 Payload rules:
 
 - `event`: `"REQUEST_CHANGES"` if any comment is `[[CRITICAL]]` or `[[HIGH]]`; otherwise
-  `"COMMENT"`.
+  `"COMMENT"`. Never use `"APPROVE"` — the reviews API rejects it on your own PR, and a
+  no-findings result is reported as a `COMMENT` (see below).
 - Each comment body starts with the severity tag in double brackets
   (`[[CRITICAL]]`/`[[HIGH]]`/`[[MEDIUM]]`/`[[LOW]]`), then the description, then an
   optional ` ```suggestion ``` ` block (only when a concrete line replacement exists),
@@ -49,7 +55,7 @@ Payload rules:
   keys entirely otherwise (do not emit `null` — the API rejects it).
 - Omit the suggestion block when the fix needs a redesign; describe the fix in prose.
 - If there are no real findings, output exactly:
-  `{"body":"## 📋 PR Review\n\nNo blocking issues found.","event":"APPROVE","comments":[]}`
+  `{"body":"## 📋 PR Review\n\nNo blocking issues found.","event":"COMMENT","comments":[]}`
 
-## Reviewer outputs to reconcile
+## Reviewer outputs to reconcile (diff appended after them)
 

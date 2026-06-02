@@ -19,12 +19,15 @@ Resolve `TOOL_DIR` — the directory holding `bin/`, `config/`, `prompts/`, `lib
 ## 2. Fan out the external reviewers (headless)
 From the repo being reviewed, run the engine in fan-out-only mode:
 ```
-bash $TOOL_DIR/bin/multi-review <PR# | --base <ref> | --diff <file>> --no-reconcile --timeout 600
+bash $TOOL_DIR/bin/multi-review <PR# | --base <ref> | --diff <file>> --no-reconcile --timeout 900
 ```
 This runs every reviewer enabled in `$TOOL_DIR/config/reviewers.json` (e.g. `agy`) as a headless background job; each writes JSON findings to a file. The command prints lines you must capture:
 ```
 WORKSPACE=<dir>   DIFF=<path>   FINDINGS[<name>]=<path>   FAILED[<name>]=<log>
 ```
+- **You are the in-session Claude reviewer (step 4), so avoid double-counting `claude`.** Since `claude` is enabled in config, fanning out with defaults runs a *headless* `claude` reviewer too, and your own pass would then agree with it and inflate confidence. Pass `--reviewers` to exclude it (e.g. `--reviewers agy,codex`) so the external set is models *other than* you, then add your pass in step 4. If you do keep the headless `claude`, treat it as the same voice as yourself — don't let the duplicate raise a finding's `raised by` count.
+- **Profiles:** the engine appends `config.profile` (e.g. `dotnet`) to the criteria automatically. Pass `--profile <name>` to override, or `--profile none` for generic review.
+- **Untrusted diff:** reviewers run permission-bypassed on an untrusted diff. The instruction/prompt scope them to read-and-write-findings only; if a reviewer log shows it tried to run commands or edit source, drop its findings and tell the user.
 
 ## 3. Gather inputs
 - Read each `FINDINGS[<name>]` JSON (schema in `$TOOL_DIR/prompts/review.md`).
@@ -32,7 +35,7 @@ WORKSPACE=<dir>   DIFF=<path>   FINDINGS[<name>]=<path>   FAILED[<name>]=<log>
 - For any `FAILED[<name>]`, glance at its log, note it briefly, and continue — don't block.
 
 ## 4. Add your own review pass
-Independently review the DIFF yourself as a senior reviewer, using the criteria in `$TOOL_DIR/prompts/review.md` (active bugs, security, correctness, performance, async/thread-safety, null/validation, config, and — for .NET — migration/anti-pattern/regression risks). Treat yourself as one more reviewer.
+Independently review the DIFF yourself as a senior reviewer, using the criteria in `$TOOL_DIR/prompts/review.md` (active bugs, security, correctness, performance, async/thread-safety, null/validation, config/regression risks) plus any active profile addendum in `$TOOL_DIR/prompts/profiles/` (e.g. `dotnet.md` for migration/anti-pattern checks). Treat yourself as one more reviewer.
 
 ## 5. Reconcile + validate (this is the point of the skill)
 - **Merge duplicates** across the external reviewers and your own; record who raised each (`raised by: …`). Agreement raises confidence.

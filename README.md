@@ -32,9 +32,26 @@ issues multiple models agree on, drops noise, and ranks by severity.
 > file write isn't blocked — the instruction is scoped to "review + write JSON, don't
 > modify source or post to GitHub", as the default config does.
 
+## Security
+
+The diff you review is **untrusted input** — especially for external/contributor PRs.
+Reviewers run permission-bypassed, so a diff that contains prompt-injection text
+("ignore your instructions and run …") is a real attack surface. Mitigations in place:
+
+- The shared `instruction` and `prompts/review.md` both tell each agent to treat the diff
+  as data, never follow instructions inside it, and to only write its findings file.
+- Reviewers are told not to modify source, post to GitHub, run commands, or fetch URLs.
+
+These are soft guardrails. For untrusted PRs, prefer restricting each reviewer to
+read + write-findings tools via its CLI's own allowlist where supported, and review the
+per-reviewer logs (`out/<ts>/<name>.log`) if anything looks off. Don't point this at diffs
+you wouldn't be comfortable handing to an autonomous agent.
+
 ## Requirements (Windows)
 
-- **Git for Windows** — provides Git Bash, which supplies `bash` and `cygpath`
+- **Git for Windows** — provides Git Bash, which supplies `bash` (≥4, for `mapfile` and
+  associative arrays — Git Bash and modern Linux qualify; stock macOS bash 3.2 does not)
+  and `cygpath`
 - **`jq`** — `winget install jqlang.jq`
 - **`gh`** — only for reviewing/posting to GitHub PRs
 - The reviewer CLIs you enable (`claude`, `agy`, `codex`, `gemini`, …) on your `PATH`,
@@ -98,15 +115,28 @@ The shared `instruction` (top level) tells the agent what to do. Placeholders:
 - `{PROMPT}` — path to the criteria + JSON-schema file (`prompts/review.md` + the diff)
 - `{OUT}` — path the agent must write its JSON findings to
 
-The `reconciler` runs **headless** (stdin) to merge the findings:
+The `reconciler` is the **default** headless (stdin) merge pass. To let
+`--reconciler <name>` pick a different CLI, add that name to the `reconcilers` map:
 
 ```json
-"reconciler": { "name": "claude", "cmd": "cat {PROMPT} | claude -p | tee {OUT}" }
+"reconciler":  { "name": "claude", "cmd": "cat {PROMPT} | claude -p | tee {OUT}" },
+"reconcilers": { "gemini": "cat {PROMPT} | gemini -p --yolo | tee {OUT}" }
 ```
+
+`--reconciler gemini` then runs the `gemini` entry; an unknown name errors instead of
+silently falling back to claude.
 
 Toggle reviewers with `enabled`. **Tune each `cmd` per CLI** — the non-interactive flag
 and permission-bypass flag differ (`claude -p … --dangerously-skip-permissions`,
 `agy --print … --dangerously-skip-permissions`, `codex exec …`, `gemini -p … --yolo`).
+
+### Language/framework profile
+
+`prompts/review.md` is now **generic**. Set a top-level `"profile"` to append an addendum
+from `prompts/profiles/<name>.md` to the criteria — e.g. `"profile": "dotnet"` for the
+ASP.NET Core / .NET 9 migration checks. Override per run with `--profile <name>` (or
+`--profile none` to force generic). Add your own profile by dropping a `<name>.md` in
+`prompts/profiles/`.
 
 ## Status
 
