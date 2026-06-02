@@ -16,7 +16,9 @@
 #
 # Options:
 #   --reviewers a,b,c   override the enabled reviewers from config
-#   --reconciler NAME   override the reconciler CLI name (must exist in config)
+#   --reconciler NAME   override the reconciler CLI (must exist as config .reconcilers.NAME)
+#   --profile NAME      append prompts/profiles/NAME.md to the review criteria
+#                       (default from config .profile; e.g. "dotnet")
 #   --backend B         none|wezterm|tmux  (default: none, headless)
 #   --no-reconcile      fan out only; print each reviewer's JSON path and exit
 #                       (used by the /multi-review skill so Claude reconciles)
@@ -48,7 +50,8 @@ need jq
 
 # ---- parse args -------------------------------------------------------------
 PR=""; DIFF_FILE=""; BASE="origin/main"
-REVIEWERS_OVERRIDE=""; RECONCILER_OVERRIDE=""; POST=0; TIMEOUT=900; BACKEND="auto"; NO_RECONCILE=0
+REVIEWERS_OVERRIDE=""; RECONCILER_OVERRIDE=""; PROFILE_OVERRIDE=""; POST=0; TIMEOUT=900; BACKEND="auto"; NO_RECONCILE=0
+PROFILE_SET=0
 needval() { [ $# -ge 2 ] || die "missing argument for $1"; }
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -56,11 +59,12 @@ while [ $# -gt 0 ]; do
     --base)        needval "$@"; BASE="$2"; shift 2;;
     --reviewers)   needval "$@"; REVIEWERS_OVERRIDE="$2"; shift 2;;
     --reconciler)  needval "$@"; RECONCILER_OVERRIDE="$2"; shift 2;;
+    --profile)     needval "$@"; PROFILE_OVERRIDE="$2"; PROFILE_SET=1; shift 2;;
     --backend)     needval "$@"; BACKEND="$2"; shift 2;;
     --no-reconcile) NO_RECONCILE=1; shift;;
     --post)        POST=1; shift;;
     --timeout)    needval "$@"; TIMEOUT="$2"; shift 2;;
-    -h|--help)    sed -n '2,30p' "$0"; exit 0;;
+    -h|--help)    sed -n '2,33p' "$0"; exit 0;;
     -*)           die "unknown option: $1";;
     *)            PR="$1"; shift;;
   esac
@@ -107,7 +111,22 @@ fi
 [ -s "$DIFF" ] || die "diff is empty — nothing to review"
 
 # ---- build the criteria+schema file the agents read -------------------------
-cat "$REVIEW_PROMPT" "$DIFF" > "$PROMPT"
+# review.md (generic) + optional language/framework profile + the diff. The profile
+# comes from --profile, else config .profile; empty/"none" means generic-only.
+if [ "$PROFILE_SET" -eq 1 ]; then
+  PROFILE="$PROFILE_OVERRIDE"
+else
+  PROFILE="$(jqr -r '.profile // ""' "$CONFIG")"
+  [ "$PROFILE" = "null" ] && PROFILE=""
+fi
+cat "$REVIEW_PROMPT" > "$PROMPT"
+if [ -n "$PROFILE" ] && [ "$PROFILE" != "none" ]; then
+  PROFILE_FILE="$ROOT/prompts/profiles/$PROFILE.md"
+  [ -f "$PROFILE_FILE" ] || die "profile not found: $PROFILE_FILE"
+  { echo; cat "$PROFILE_FILE"; } >> "$PROMPT"
+fi
+{ echo; echo "## Diff to review"; echo; } >> "$PROMPT"
+cat "$DIFF" >> "$PROMPT"
 
 # ---- resolve reviewer set ---------------------------------------------------
 if [ -n "$REVIEWERS_OVERRIDE" ]; then
@@ -117,7 +136,8 @@ else
 fi
 [ "${#NAMES[@]}" -gt 0 ] || die "no reviewers selected"
 
-RECONCILER="${RECONCILER_OVERRIDE:-$(jqr -r '.reconciler.name // "claude"' "$CONFIG")}"
+DEFAULT_RECONCILER="$(jqr -r '.reconciler.name // "claude"' "$CONFIG")"
+RECONCILER="${RECONCILER_OVERRIDE:-$DEFAULT_RECONCILER}"
 cmd_for() { jqr -r --arg n "$1" '.reviewers[] | select(.name==$n) | .cmd' "$CONFIG"; }
 INSTRUCTION_TMPL="$(jqr -r '.instruction' "$CONFIG")"
 [ -n "$INSTRUCTION_TMPL" ] && [ "$INSTRUCTION_TMPL" != "null" ] || die "config has no 'instruction'"
@@ -259,9 +279,19 @@ for name in "${NAMES[@]}"; do
 done
 [ "$got" -gt 0 ] || die "no reviewer produced valid JSON — check $RUN/*.json"
 
+# Append the diff so the reconciler can validate each finding's file/line/side against it.
+{ echo; echo "## Diff (validate every finding's line against this)"; echo; cat "$DIFF"; } >> "$RECON_IN"
+
 # ---- reconcile (headless) ---------------------------------------------------
-RTMPL="$(jqr -r '.reconciler.cmd' "$CONFIG")"
-[ -n "$RTMPL" ] && [ "$RTMPL" != "null" ] || die "config has no reconciler.cmd"
+# The selected reconciler's command: the default lives in .reconciler.cmd; any other
+# name must be defined in the optional .reconcilers map so --reconciler actually works.
+if [ "$RECONCILER" = "$DEFAULT_RECONCILER" ]; then
+  RTMPL="$(jqr -r '.reconciler.cmd' "$CONFIG")"
+else
+  RTMPL="$(jqr -r --arg n "$RECONCILER" '.reconcilers[$n] // empty' "$CONFIG")"
+  [ -n "$RTMPL" ] || die "no command for reconciler '$RECONCILER' — add it to config .reconcilers"
+fi
+[ -n "$RTMPL" ] && [ "$RTMPL" != "null" ] || die "config has no reconciler command"
 rcmd="${RTMPL//\{PROMPT\}/$RECON_IN}"; rcmd="${rcmd//\{OUT\}/$FINAL}"
 echo "› reconciling $got reviews with $RECONCILER"
 bash -c "$rcmd" >/dev/null
