@@ -7,7 +7,9 @@ description: Multi-model unified PR/diff code review. Fans a diff out to externa
 
 You orchestrate several AI-CLI reviewers **plus your own review** of a PR or diff, reconcile everything into ONE review, validate it against the diff, and optionally post it. You are both an independent reviewer **and** the reconciler — do not rely on a separate `claude -p` reconcile pass.
 
-`TOOL_DIR=/c/Users/ericc/EricVault/Personal/multi-review` (the engine + `config/reviewers.json` live here).
+Resolve `TOOL_DIR` — the directory holding `bin/`, `config/`, `prompts/`, `lib/`:
+- If `$CLAUDE_PLUGIN_ROOT` is set (installed as a plugin), use `TOOL_DIR="$CLAUDE_PLUGIN_ROOT"`.
+- Otherwise (plain user/project skill), `TOOL_DIR` is the root of the `multi-review` checkout — resolve it (e.g. follow the `multi-review` shell alias / `command -v multi-review`, or ask the user) before continuing. **Do not hardcode a machine-specific path.**
 
 ## 1. Resolve the target
 - A PR number → review that PR (needs `gh` access to the repo).
