@@ -70,7 +70,7 @@ while [ $# -gt 0 ]; do
     --backend)     needval "$@"; BACKEND="$2"; shift 2;;
     --no-reconcile) NO_RECONCILE=1; shift;;
     --post)        POST=1; shift;;
-    --timeout)    needval "$@"; TIMEOUT="$2"; shift 2;;
+    --timeout)    needval "$@"; [[ "$2" =~ ^[0-9]+$ ]] || die "timeout must be a positive integer: $2"; TIMEOUT="$2"; shift 2;;
     --print-root|--where) echo "$ROOT"; exit 0;;
     # Print the leading comment block (everything after the shebang up to the first
     # non-comment line), stripping the leading '# '. Avoids a hardcoded line range
@@ -162,7 +162,12 @@ declare -a AVAIL=() MISSING=()
 for name in "${NAMES[@]}"; do
   tmpl="$(cmd_for "$name")"
   [ -n "$tmpl" ] && [ "$tmpl" != "null" ] || die "no command configured for reviewer '$name'"
-  bin="${tmpl%% *}"
+  # First token = the executable. Handle a quoted path with spaces (e.g. a Windows
+  # "C:/Program Files/.../reviewer.exe" {INSTR}); else split on the first space.
+  trimmed="${tmpl#"${tmpl%%[![:space:]]*}"}"
+  if [[ "$trimmed" =~ ^\"([^\"]+)\" ]]; then bin="${BASH_REMATCH[1]}"
+  elif [[ "$trimmed" =~ ^\'([^\']+)\' ]]; then bin="${BASH_REMATCH[1]}"
+  else bin="${trimmed%% *}"; fi
   if command -v "$bin" >/dev/null 2>&1; then AVAIL+=("$name"); else MISSING+=("$name ($bin)"); fi
 done
 [ "${#MISSING[@]}" -gt 0 ] && echo "› skipping reviewers not on PATH: ${MISSING[*]}" >&2
