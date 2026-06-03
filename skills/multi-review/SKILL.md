@@ -9,7 +9,7 @@ You orchestrate several AI-CLI reviewers **plus your own review** of a PR or dif
 
 Resolve `TOOL_DIR` — the directory holding `bin/`, `config/`, `prompts/`, `lib/`:
 - If `$CLAUDE_PLUGIN_ROOT` is set (installed as a plugin), use `TOOL_DIR="$CLAUDE_PLUGIN_ROOT"`.
-- Otherwise (plain user/project skill), `TOOL_DIR` is the root of the `multi-review` checkout — resolve it (e.g. follow the `multi-review` shell alias / `command -v multi-review`, or ask the user) before continuing. **Do not hardcode a machine-specific path.**
+- Otherwise, resolve dynamically: run `bash -ic 'type multi-review 2>/dev/null'` to read the alias (sources `.bashrc`), extract the path argument (strip leading `bash `), then derive `TOOL_DIR` as its parent directory (strip `/bin/multi-review`). Example: alias `bash /path/to/multi-review/bin/multi-review` → `TOOL_DIR=/path/to/multi-review`. If resolution fails, tell the user to check the `multi-review` alias in `~/.bashrc`. **Do not hardcode a machine-specific path.**
 
 ## 1. Resolve the target
 - A PR number → review that PR (needs `gh` access to the repo).
