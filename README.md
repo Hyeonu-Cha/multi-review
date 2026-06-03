@@ -120,25 +120,32 @@ exists, else `COMMENT`.
 
 ## Configuration — `config/reviewers.json`
 
-Each reviewer has a `name`, an `enabled` toggle, and a `cmd` — the CLI's one-shot
-"print" mode invoked with the instruction. `{INSTR}` is replaced with the shared
-`instruction` (paths substituted, single-quoted automatically).
+### Shared config (both skill and headless paths)
 
-**Default enabled reviewers: `agy`, `codex`, `gemini`. Claude is intentionally disabled 
-(it reviews via the `/multi-review` skill in-session instead).** Example config entry:
+**Reviewers:** Each has `name`, `enabled` toggle, and `cmd` (CLI's one-shot "print" mode). 
+`{INSTR}` is replaced with shared `instruction` (paths substituted, single-quoted).
+
+**Default enabled: `agy`, `codex`, `gemini`. Claude intentionally disabled 
+(reviews via `/multi-review` skill in-session).** Example:
 
 ```json
 { "name": "agy", "enabled": true, "cmd": "agy --print {INSTR} --dangerously-skip-permissions" }
 ```
 
-The shared `instruction` (top level) tells the agent what to do. Placeholders:
+**Instruction:** Top-level field tells agents what to do. Placeholders:
+- `{DIFF}` — path to diff
+- `{PROMPT}` — path to criteria + JSON-schema file (review.md + diff)
+- `{OUT}` — path agent must write JSON findings to
 
-- `{DIFF}` — path to the diff
-- `{PROMPT}` — path to the criteria + JSON-schema file (`prompts/review.md` + the diff)
-- `{OUT}` — path the agent must write its JSON findings to
+**Profile:** Optional language/framework addendum appended to criteria:
+```json
+"profile": ""  # empty = generic. "dotnet" appends prompts/profiles/dotnet.md
+```
 
-The `reconciler` (headless path only) merges findings. Default is `claude -p`, but 
-alternatives are in the `reconcilers` map. Example:
+### Headless-only config (terminal/CI path, no session)
+
+The `reconciler` merges external reviewers' findings. **Not used in `/multi-review` skill** 
+(session Claude reconciles). Headless terminal must specify one (default: `claude -p`).
 
 ```json
 "reconciler":  { "name": "claude", "cmd": "cat {PROMPT} | claude -p | tee {OUT}" },
@@ -148,9 +155,8 @@ alternatives are in the `reconcilers` map. Example:
 }
 ```
 
-Use `--reconciler gemini` to swap reconciler; unknown name errors instead of 
-silently falling back. **Note: only used in headless `multi-review` from terminal/CI. 
-The `/multi-review` skill reconciles in-session (no reconciler.cmd run).**
+Use `--reconciler gemini` to pick alternative; unknown name errors. Only applies to 
+`bin/multi-review` from terminal/CI. Skill ignores these (no reconciler.cmd run).
 
 ### Who reviews and who reconciles
 
