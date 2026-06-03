@@ -126,6 +126,22 @@ The `reconciler` is the **default** headless (stdin) merge pass. To let
 `--reconciler gemini` then runs the `gemini` entry; an unknown name errors instead of
 silently falling back to claude.
 
+### Who reviews and who reconciles
+
+There are two ways to run, and the reconciler differs:
+
+- **`/multi-review` skill (inside a Claude session)** — the engine is run with
+  `--no-reconcile` (fan-out only). The **in-session Claude** is both the *claude reviewer*
+  (its own independent pass) **and** the reconciler — it merges everything itself. **No
+  `claude -p` is spawned.** That's why `claude` is disabled as a headless reviewer in the
+  default config: the session covers it, using one Claude quota instead of three.
+- **`multi-review` from a terminal / CI (no session)** — there is no in-session Claude, so
+  the `reconciler.cmd` runs headless (`claude -p` by default). Use `--reconciler gemini`
+  (or `codex`) to avoid claude in this path too.
+
+So `reconciler.cmd` (`claude -p`) **only runs in the headless path**; in the skill, the
+session does both the claude review and the merge.
+
 Toggle reviewers with `enabled`. **Tune each `cmd` per CLI** — the non-interactive flag
 and permission-bypass flag differ (`claude -p … --dangerously-skip-permissions`,
 `agy --print … --dangerously-skip-permissions`, `codex exec …`, `gemini -p … --yolo`).
