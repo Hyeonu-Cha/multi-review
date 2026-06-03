@@ -9,7 +9,7 @@ You orchestrate several AI-CLI reviewers **plus your own review** of a PR or dif
 
 Resolve `TOOL_DIR` — the directory holding `bin/`, `config/`, `prompts/`, `lib/`:
 - If `$CLAUDE_PLUGIN_ROOT` is set (installed as a plugin), use `TOOL_DIR="$CLAUDE_PLUGIN_ROOT"`.
-- Otherwise, ask the engine where it lives: `TOOL_DIR="$(multi-review --print-root)"` (the `multi-review` alias/command is on `PATH`; it prints its own install dir and exits). The fan-out command in step 2 also echoes `TOOL_DIR=<dir>` in its output, so you can read it from there instead. If `multi-review --print-root` fails, the command isn't installed — tell the user to check the `multi-review` alias/PATH entry. **Do not hardcode a machine-specific path and do not parse the alias definition by hand.**
+- Otherwise, ask the engine where it lives: `TOOL_DIR="$(bash -ic 'multi-review --print-root' 2>/dev/null)"`. `multi-review` is a shell alias, so it must be resolved in an **interactive** shell (`bash -ic`) — a plain non-interactive `bash -c` does not source `.bashrc` and the alias won't exist. The engine prints its own install dir and exits. If this returns empty, the alias isn't installed — tell the user to check the `multi-review` alias in `~/.bashrc`. **Do not hardcode a machine-specific path and do not parse the alias definition by hand.**
 
 ## 1. Resolve the target
 - A PR number → review that PR (needs `gh` access to the repo).
