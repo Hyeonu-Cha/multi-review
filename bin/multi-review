@@ -24,6 +24,8 @@
 #                       (used by the /multi-review skill so Claude reconciles)
 #   --post              post the final review to the PR (needs PR_NUMBER + gh)
 #   --timeout SECONDS   per-run wait for reviewers to write their JSON (default 900)
+#   --print-root        print this tool's install dir (TOOL_DIR) and exit
+#                       (used by the /multi-review skill to locate config/prompts)
 #
 # Backends:
 #   none    — default. Reviewers run as headless background jobs. No GUI needed.
@@ -36,17 +38,22 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG="$ROOT/config/reviewers.json"
 REVIEW_PROMPT="$ROOT/prompts/review.md"
 RECONCILE_PROMPT="$ROOT/lib/reconcile.md"
-START_DIR="$(pwd)"
 
 die() { echo "multi-review: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "required tool not found: $1"; }
+
+# NOTE: `need jq` is deferred until after arg parsing so the no-op flags
+# (--print-root, --help) work without jq installed.
 
 # Windows jq emits CRLF; strip CR so values feeding shell vars don't carry \r.
 jqr() { jq "$@" | tr -d '\r'; }
 # Windows path (forward-slash, no escaping) for handing file paths to Windows CLIs.
 winpath() { cygpath -m "$1" 2>/dev/null || echo "$1"; }
-
-need jq
+# A reviewer file is usable only if it's a JSON object with a `findings` array — not
+# merely well-formed JSON. Catches a CLI that wrote valid-but-wrong-shape output.
+valid_findings() { jqr -e 'type=="object" and (.findings|type=="array")' "$1" >/dev/null 2>&1; }
+# The reconciler output must be a postable reviews-API payload, not just valid JSON.
+valid_payload() { jqr -e 'type=="object" and (.body|type=="string") and (.event|type=="string") and (.comments|type=="array")' "$1" >/dev/null 2>&1; }
 
 # ---- parse args -------------------------------------------------------------
 PR=""; DIFF_FILE=""; BASE="origin/main"
@@ -63,13 +70,18 @@ while [ $# -gt 0 ]; do
     --backend)     needval "$@"; BACKEND="$2"; shift 2;;
     --no-reconcile) NO_RECONCILE=1; shift;;
     --post)        POST=1; shift;;
-    --timeout)    needval "$@"; TIMEOUT="$2"; shift 2;;
-    -h|--help)    sed -n '2,33p' "$0"; exit 0;;
+    --timeout)    needval "$@"; [[ "$2" =~ ^[0-9]+$ ]] || die "timeout must be a positive integer: $2"; TIMEOUT="$2"; shift 2;;
+    --print-root|--where) echo "$ROOT"; exit 0;;
+    # Print the leading comment block (everything after the shebang up to the first
+    # non-comment line), stripping the leading '# '. Avoids a hardcoded line range
+    # that silently truncates whenever the header grows.
+    -h|--help)    awk 'NR==1{next} /^#/{sub(/^#( |$)/,""); print; next} {exit}' "$0"; exit 0;;
     -*)           die "unknown option: $1";;
     *)            PR="$1"; shift;;
   esac
 done
 
+need jq
 [ -f "$CONFIG" ] || die "missing config: $CONFIG"
 
 # ---- backend detection ------------------------------------------------------
@@ -142,6 +154,26 @@ cmd_for() { jqr -r --arg n "$1" '.reviewers[] | select(.name==$n) | .cmd' "$CONF
 INSTRUCTION_TMPL="$(jqr -r '.instruction' "$CONFIG")"
 [ -n "$INSTRUCTION_TMPL" ] && [ "$INSTRUCTION_TMPL" != "null" ] || die "config has no 'instruction'"
 
+# ---- preflight: drop reviewers whose CLI isn't on PATH ----------------------
+# Otherwise an uninstalled CLI just fails silently inside its background job and shows
+# up as an opaque "no valid JSON" later. Check the command (first token of its cmd
+# template) up front and skip it with a clear message.
+declare -a AVAIL=() MISSING=()
+for name in "${NAMES[@]}"; do
+  tmpl="$(cmd_for "$name")"
+  [ -n "$tmpl" ] && [ "$tmpl" != "null" ] || die "no command configured for reviewer '$name'"
+  # First token = the executable. Handle a quoted path with spaces (e.g. a Windows
+  # "C:/Program Files/.../reviewer.exe" {INSTR}); else split on the first space.
+  trimmed="${tmpl#"${tmpl%%[![:space:]]*}"}"
+  if [[ "$trimmed" =~ ^\"([^\"]+)\" ]]; then bin="${BASH_REMATCH[1]}"
+  elif [[ "$trimmed" =~ ^\'([^\']+)\' ]]; then bin="${BASH_REMATCH[1]}"
+  else bin="${trimmed%% *}"; fi
+  if command -v "$bin" >/dev/null 2>&1; then AVAIL+=("$name"); else MISSING+=("$name ($bin)"); fi
+done
+[ "${#MISSING[@]}" -gt 0 ] && echo "› skipping reviewers not on PATH: ${MISSING[*]}" >&2
+NAMES=("${AVAIL[@]}")
+[ "${#NAMES[@]}" -gt 0 ] || die "no enabled reviewer CLI is installed on PATH — install at least one (agy, codex, gemini, …)"
+
 # instruction with file paths substituted (Windows paths for the Windows CLIs)
 instr_for() {
   local out="$RUN/$1.json" s="$INSTRUCTION_TMPL"
@@ -168,7 +200,12 @@ for name in "${NAMES[@]}"; do
   {
     echo "#!/usr/bin/env bash"
     echo "set +e"
-    echo "cd '$START_DIR'"
+    # Run inside the throwaway per-run workspace, NOT the repo under review. Reviewers
+    # only need the diff/prompt (handed in by absolute path) and write findings to {OUT}
+    # here — they never need the source tree. This keeps a prompt-injected reviewer out
+    # of your working copy. It is defense-in-depth, not a sandbox: the CLI still runs
+    # permission-bypassed, so for fully untrusted PRs run the whole tool in a container.
+    echo "cd '$RUN'"
     echo "$cmd"
     echo "rc=\$?"
     echo "echo \"\$rc\" > '$out.rc'"
@@ -230,7 +267,7 @@ while :; do
   finished=0; valid=0
   for name in "${NAMES[@]}"; do
     [ -f "$RUN/$name.json.rc" ] && finished=$((finished+1))
-    jqr -e . "$RUN/$name.json" >/dev/null 2>&1 && valid=$((valid+1))
+    valid_findings "$RUN/$name.json" && valid=$((valid+1))
   done
   # stop as soon as every reviewer has finished (wrote its .rc), pass or fail —
   # don't block the full timeout on a reviewer that crashed without valid JSON.
@@ -254,10 +291,11 @@ fi
 # caller (a Claude session) can read them and reconcile/validate itself.
 if [ "$NO_RECONCILE" -eq 1 ]; then
   echo "› fan-out only (--no-reconcile). Reviewer findings:"
+  echo "TOOL_DIR=$ROOT"
   echo "WORKSPACE=$RUN"
   echo "DIFF=$DIFF"
   for name in "${NAMES[@]}"; do
-    if jqr -e . "$RUN/$name.json" >/dev/null 2>&1; then echo "FINDINGS[$name]=$RUN/$name.json"
+    if valid_findings "$RUN/$name.json"; then echo "FINDINGS[$name]=$RUN/$name.json"
     else echo "FAILED[$name]=$RUN/$name.log"; fi
   done
   exit 0
@@ -269,7 +307,7 @@ cat "$RECONCILE_PROMPT" > "$RECON_IN"
 got=0
 for name in "${NAMES[@]}"; do
   f="$RUN/$name.json"
-  if jqr -e . "$f" >/dev/null 2>&1; then
+  if valid_findings "$f"; then
     { echo; echo "### reviewer: $name"; cat "$f"; echo; } >> "$RECON_IN"
     got=$((got+1))
   else
@@ -296,7 +334,7 @@ rcmd="${RTMPL//\{PROMPT\}/$RECON_IN}"; rcmd="${rcmd//\{OUT\}/$FINAL}"
 echo "› reconciling $got reviews with $RECONCILER"
 bash -c "$rcmd" >/dev/null
 
-jqr -e . "$FINAL" >/dev/null 2>&1 || die "reconciler output is not valid JSON: $FINAL"
+valid_payload "$FINAL" || die "reconciler output is not a valid reviews-API payload (need .body, .event, .comments[]): $FINAL"
 
 echo
 echo "================ COMBINED REVIEW ================"
