@@ -54,11 +54,17 @@ Reviewers run permission-bypassed, so a diff that contains prompt-injection text
 - The shared `instruction` and `prompts/review.md` both tell each agent to treat the diff
   as data, never follow instructions inside it, and to only write its findings file.
 - Reviewers are told not to modify source, post to GitHub, run commands, or fetch URLs.
+- Each reviewer runs **in the throwaway per-run workspace (`out/<ts>/`), not in the repo
+  under review**. The diff and criteria are handed in by absolute path, so a reviewer never
+  needs — and doesn't start in — your working copy. This keeps a prompt-injected reviewer
+  out of your source tree.
 
-These are soft guardrails. For untrusted PRs, prefer restricting each reviewer to
-read + write-findings tools via its CLI's own allowlist where supported, and review the
-per-reviewer logs (`out/<ts>/<name>.log`) if anything looks off. Don't point this at diffs
-you wouldn't be comfortable handing to an autonomous agent.
+These are soft guardrails plus defense-in-depth, **not a sandbox** — reviewers still run
+permission-bypassed and could climb out of the workspace. For untrusted PRs, prefer
+restricting each reviewer to read + write-findings tools via its CLI's own allowlist where
+supported, run the whole tool inside a container, and review the per-reviewer logs
+(`out/<ts>/<name>.log`) if anything looks off. Don't point this at diffs you wouldn't be
+comfortable handing to an autonomous agent.
 
 ## Requirements (Windows)
 
@@ -92,7 +98,9 @@ shouldn't travel between PCs), so expect to install + sign in once per machine.
 
 No bundled doctor command yet — check manually in Git Bash:
 `bash --version`, `jq --version`, and that each enabled reviewer CLI runs
-(e.g. `claude --version`, `agy --version`). WezTerm is needed only for the optional
+(e.g. `claude --version`, `agy --version`). The engine also preflights this: any enabled
+reviewer whose CLI isn't on `PATH` is skipped with a `› skipping reviewers not on PATH: …`
+notice rather than failing silently mid-run. WezTerm is needed only for the optional
 `--backend wezterm` live view.
 
 ## Usage

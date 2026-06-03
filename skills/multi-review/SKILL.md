@@ -9,7 +9,7 @@ You orchestrate several AI-CLI reviewers **plus your own review** of a PR or dif
 
 Resolve `TOOL_DIR` — the directory holding `bin/`, `config/`, `prompts/`, `lib/`:
 - If `$CLAUDE_PLUGIN_ROOT` is set (installed as a plugin), use `TOOL_DIR="$CLAUDE_PLUGIN_ROOT"`.
-- Otherwise, resolve dynamically: run `bash -ic 'type multi-review 2>/dev/null'` to read the alias (sources `.bashrc`), extract the executable path (handling cases with or without a leading interpreter like `bash`, and stripping any surrounding quotes or whitespace), then derive `TOOL_DIR` as its parent directory (by removing `/bin/multi-review` from the end). Example: if the resolved path is `/path/to/multi-review/bin/multi-review`, then `TOOL_DIR=/path/to/multi-review`. If resolution fails, tell the user to check the `multi-review` alias in `~/.bashrc`. **Do not hardcode a machine-specific path.**
+- Otherwise, ask the engine where it lives: `TOOL_DIR="$(multi-review --print-root)"` (the `multi-review` alias/command is on `PATH`; it prints its own install dir and exits). The fan-out command in step 2 also echoes `TOOL_DIR=<dir>` in its output, so you can read it from there instead. If `multi-review --print-root` fails, the command isn't installed — tell the user to check the `multi-review` alias/PATH entry. **Do not hardcode a machine-specific path and do not parse the alias definition by hand.**
 
 ## 1. Resolve the target
 - A PR number → review that PR (needs `gh` access to the repo).
@@ -30,9 +30,10 @@ WORKSPACE=<dir>   DIFF=<path>   FINDINGS[<name>]=<path>   FAILED[<name>]=<log>
 - **Untrusted diff:** reviewers run permission-bypassed on an untrusted diff. The instruction/prompt scope them to read-and-write-findings only; if a reviewer log shows it tried to run commands or edit source, drop its findings and tell the user.
 
 ## 3. Gather inputs
-- Read each `FINDINGS[<name>]` JSON (schema in `$TOOL_DIR/prompts/review.md`).
+- Read each `FINDINGS[<name>]` JSON (schema in `$TOOL_DIR/prompts/review.md`); a file is only listed as `FINDINGS[...]` if it's a JSON object with a `findings` array, so you can trust the shape.
 - Read the `DIFF`.
 - For any `FAILED[<name>]`, glance at its log, note it briefly, and continue — don't block.
+- The engine drops reviewers whose CLI isn't on `PATH` and prints `› skipping reviewers not on PATH: …`. If a reviewer you expected is missing, mention it so the user knows that model didn't weigh in.
 
 ## 4. Add your own review pass (you are the "claude" reviewer)
 This is a **real, independent review — do it before reconciling, not as a rubber-stamp of the others.** Read the DIFF yourself and apply your full code-review ability as a senior reviewer, using the criteria in `$TOOL_DIR/prompts/review.md` (active bugs, security, correctness, performance, async/thread-safety, null/validation, config/regression risks) plus any active profile addendum in `$TOOL_DIR/prompts/profiles/` (e.g. `dotnet.md` for migration/anti-pattern checks). Produce your own findings list with the same fields the external reviewers use. Treat yourself as one more reviewer — claude's voice in the cross-check — then merge in step 5.
