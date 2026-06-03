@@ -1,23 +1,26 @@
 # multi-review
 
 Multi-CLI code review. Fan a PR diff out to several AI-CLI reviewers
-(Claude, Antigravity/`agy`, Codex, Gemini, …) running **headlessly in parallel**,
+(Antigravity/`agy`, Codex, Gemini) running **headlessly in parallel**,
 then **reconcile** their findings into one de-duplicated, severity-ranked review.
+Claude reviews via the `/multi-review` skill (in-session, not headless).
 
 Goal: a self-hosted replacement for Copilot review that cross-checks multiple models.
 
-> **Headless by default** — reviewers run as background jobs; no GUI needed. Optionally
-> run them in **WezTerm/tmux panes** (`--backend wezterm`) if you want to watch live.
+> **Headless by default** — external reviewers run as background jobs; no GUI needed. 
+> Optionally watch them live in **WezTerm/tmux panes** (`--backend wezterm`).
 
 ## How it works
 
 ```
 multi-review <PR>                         (or --diff file / current branch vs --base)
    │  get diff  →  build criteria+schema file
-   ├─ bg job: claude -p '<instruction>'   ──▶ claude.json ┐
-   ├─ bg job: agy --print '<instruction>' ──▶ agy.json     ├─ JSON findings (files)
-   ├─ bg job: …            '<instruction>' ──▶ ….json      ┘
-   └─ headless reconcile pass → review.json  →  optional inline post via reviews API
+   ├─ bg job: agy --print '<instruction>'   ──▶ agy.json     ┐
+   ├─ bg job: codex exec '<instruction>'    ──▶ codex.json   ├─ JSON findings (files)
+   ├─ bg job: gemini -p '<instruction>'     ──▶ gemini.json  ┘
+   └─ (in /multi-review skill: in-session Claude reviews + reconciles)
+      (in headless terminal: reconciler.cmd merges → review.json)
+      →  optional inline post via reviews API
 ```
 
 Each reviewer runs a **one-shot non-interactive command**, using its own native
@@ -115,32 +118,33 @@ The shared `instruction` (top level) tells the agent what to do. Placeholders:
 - `{PROMPT}` — path to the criteria + JSON-schema file (`prompts/review.md` + the diff)
 - `{OUT}` — path the agent must write its JSON findings to
 
-The `reconciler` is the **default** headless (stdin) merge pass. To let
-`--reconciler <name>` pick a different CLI, add that name to the `reconcilers` map:
+The `reconciler` (headless path only) merges findings. Default is `claude -p`, but 
+alternatives are in the `reconcilers` map. Example:
 
 ```json
 "reconciler":  { "name": "claude", "cmd": "cat {PROMPT} | claude -p | tee {OUT}" },
-"reconcilers": { "gemini": "cat {PROMPT} | gemini -p --yolo | tee {OUT}" }
+"reconcilers": { 
+  "gemini": "cat {PROMPT} | gemini -p --yolo | tee {OUT}",
+  "codex": "cat {PROMPT} | codex exec --dangerously-bypass-approvals-and-sandbox | tee {OUT}"
+}
 ```
 
-`--reconciler gemini` then runs the `gemini` entry; an unknown name errors instead of
-silently falling back to claude.
+Use `--reconciler gemini` to swap reconciler; unknown name errors instead of 
+silently falling back. **Note: only used in headless `multi-review` from terminal/CI. 
+The `/multi-review` skill reconciles in-session (no reconciler.cmd run).**
 
 ### Who reviews and who reconciles
 
-There are two ways to run, and the reconciler differs:
+Two paths, zero `-p` in the skill:
 
-- **`/multi-review` skill (inside a Claude session)** — the engine is run with
-  `--no-reconcile` (fan-out only). The **in-session Claude** is both the *claude reviewer*
-  (its own independent pass) **and** the reconciler — it merges everything itself. **No
-  `claude -p` is spawned.** That's why `claude` is disabled as a headless reviewer in the
-  default config: the session covers it, using one Claude quota instead of three.
-- **`multi-review` from a terminal / CI (no session)** — there is no in-session Claude, so
-  the `reconciler.cmd` runs headless (`claude -p` by default). Use `--reconciler gemini`
-  (or `codex`) to avoid claude in this path too.
+- **`/multi-review` skill (Claude session)** — engine runs with `--no-reconcile`. 
+  In-session Claude does BOTH: reviews (step 4, independent pass) + reconciles (step 5, 
+  merges findings). **Zero `claude -p` spawned. One Claude, one quota.** That's why `claude` 
+  is disabled as a headless reviewer: session covers it.
+- **`multi-review` terminal / CI (no session)** — no in-session Claude, so `reconciler.cmd` 
+  runs headless (`claude -p` by default). Avoid it: `--reconciler gemini` or `--reconciler codex`.
 
-So `reconciler.cmd` (`claude -p`) **only runs in the headless path**; in the skill, the
-session does both the claude review and the merge.
+**If you use `/multi-review` skill, you never see `-p`.**
 
 Toggle reviewers with `enabled`. **Tune each `cmd` per CLI** — the non-interactive flag
 and permission-bypass flag differ (`claude -p … --dangerously-skip-permissions`,
