@@ -12,15 +12,25 @@ Goal: a self-hosted replacement for Copilot review that cross-checks multiple mo
 
 ## How it works
 
+**Via `/multi-review` skill (in Claude session):**
 ```
-multi-review <PR>                         (or --diff file / current branch vs --base)
+/multi-review <PR#>  [or --base <ref> / --diff <file>]
    │  get diff  →  build criteria+schema file
    ├─ bg job: agy --print '<instruction>'   ──▶ agy.json     ┐
-   ├─ bg job: codex exec '<instruction>'    ──▶ codex.json   ├─ JSON findings (files)
+   ├─ bg job: codex exec '<instruction>'    ──▶ codex.json   ├─ JSON findings
    ├─ bg job: gemini -p '<instruction>'     ──▶ gemini.json  ┘
-   └─ (in /multi-review skill: in-session Claude reviews + reconciles)
-      (in headless terminal: reconciler.cmd merges → review.json)
-      →  optional inline post via reviews API
+   ├─ [session Claude reviews (step 4)]
+   └─ [session Claude reconciles (step 5)] → unified review → optional inline post
+```
+
+**Via `multi-review` from terminal/CI (headless, no session):**
+```
+multi-review <PR#>  [or --base <ref> / --diff <file>]
+   │  get diff  →  build criteria+schema file
+   ├─ bg job: agy --print '<instruction>'   ──▶ agy.json     ┐
+   ├─ bg job: codex exec '<instruction>'    ──▶ codex.json   ├─ JSON findings
+   ├─ bg job: gemini -p '<instruction>'     ──▶ gemini.json  ┘
+   └─ reconciler.cmd (e.g. claude -p) → review.json → optional inline post
 ```
 
 Each reviewer runs a **one-shot non-interactive command**, using its own native
@@ -57,8 +67,8 @@ you wouldn't be comfortable handing to an autonomous agent.
   and `cygpath`
 - **`jq`** — `winget install jqlang.jq`
 - **`gh`** — only for reviewing/posting to GitHub PRs
-- The reviewer CLIs you enable (`claude`, `agy`, `codex`, `gemini`, …) on your `PATH`,
-  **each logged in**
+- The reviewer CLIs you enable (`agy`, `codex`, `gemini`, …) on your `PATH`, **each 
+  logged in**. (Claude reviews via the `/multi-review` skill in-session, not as a headless CLI.)
 - **WezTerm** — *optional*, only if you want `--backend wezterm` to watch reviewers live
 
 ## Setup on a new Windows PC
@@ -68,7 +78,8 @@ logins. Logins are per-machine **by design** (subscriptions / OAuth tokens don't
 shouldn't travel between PCs), so expect to install + sign in once per machine.
 
 1. Install **Git for Windows** and **`jq`** (see Requirements above).
-2. Install the reviewer CLIs you want (`claude`, `agy`, …) and **log into each**.
+2. Install the reviewer CLIs you want (`agy`, `codex`, `gemini`, …) and **log into each**.
+   (Claude is used via the `/multi-review` skill in Claude Code, not installed separately.)
 3. Clone the repo:
    ```
    git clone https://github.com/Hyeonu-Cha/multi-review.git
@@ -87,13 +98,18 @@ No bundled doctor command yet — check manually in Git Bash:
 ## Usage
 
 ```bash
+# Headless terminal path (external reviewers only):
 bin/multi-review 42                 # review GitHub PR #42
 bin/multi-review --diff my.patch    # review a saved diff
 bin/multi-review --base origin/main # review current branch vs base (default)
 
-bin/multi-review 42 --reviewers claude,agy   # override reviewer set
-bin/multi-review 42 --post                   # post combined review to the PR
-bin/multi-review 42 --timeout 1200           # wait longer for reviewers to finish
+bin/multi-review 42 --reviewers agy,codex     # override reviewer set
+bin/multi-review 42 --reconciler gemini       # use gemini to reconcile instead of claude -p
+bin/multi-review 42 --post                    # post combined review to the PR
+bin/multi-review 42 --timeout 1200            # wait longer for reviewers to finish
+
+# Skill path (in Claude Code):
+/multi-review 42                    # reviews PR #42 with agy + codex + gemini + in-session claude
 ```
 
 Output is printed and saved to `out/<timestamp>/review.json` (a GitHub reviews-API
@@ -106,10 +122,13 @@ exists, else `COMMENT`.
 
 Each reviewer has a `name`, an `enabled` toggle, and a `cmd` — the CLI's one-shot
 "print" mode invoked with the instruction. `{INSTR}` is replaced with the shared
-`instruction` (paths substituted, single-quoted automatically):
+`instruction` (paths substituted, single-quoted automatically).
+
+**Default enabled reviewers: `agy`, `codex`, `gemini`. Claude is intentionally disabled 
+(it reviews via the `/multi-review` skill in-session instead).** Example config entry:
 
 ```json
-{ "name": "claude", "enabled": true, "cmd": "claude -p {INSTR} --dangerously-skip-permissions" }
+{ "name": "agy", "enabled": true, "cmd": "agy --print {INSTR} --dangerously-skip-permissions" }
 ```
 
 The shared `instruction` (top level) tells the agent what to do. Placeholders:
