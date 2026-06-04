@@ -38,6 +38,14 @@ WORKSPACE=<dir>   DIFF=<path>   FINDINGS[<name>]=<path>   FAILED[<name>]=<log>
 ## 4. Add your own review pass (you are the "claude" reviewer)
 This is a **real, independent review — do it before reconciling, not as a rubber-stamp of the others.** Read the DIFF yourself and apply your full code-review ability as a senior reviewer, using the criteria in `$TOOL_DIR/prompts/review.md` (active bugs, security, correctness, performance, async/thread-safety, null/validation, config/regression risks) plus any active profile addendum in `$TOOL_DIR/prompts/profiles/` (e.g. `dotnet.md` for migration/anti-pattern checks). Produce your own findings list with the same fields the external reviewers use. Treat yourself as one more reviewer — claude's voice in the cross-check — then merge in step 5.
 
+**Use your repo access — this is your edge over the isolated external reviewers.** They only see the diff (plus full changed-file snapshots); you can open *any* file in the working tree. A diff-only review structurally misses whole-repo issues, so explicitly chase the cross-file classes:
+- **Symbol resolution / compile breakers.** For each new type, member, interface, or namespace a changed line references (e.g. a class that now implements `IHasPublicId`), open the file that *defines* it and confirm the reference actually binds — right namespace imported, member exists, signature matches. A reference that won't compile is at least `high`.
+- **Unused imports** introduced by the change — confirm against the whole file.
+- **Cross-file contract & consistency.** Open the base type / DTO / sibling endpoints a changed line interacts with: does a request DTO expose or require a field it shouldn't (contradicting its base or doc comment)? Is an HTTP status code (e.g. 400 vs 404) consistent with how sibling endpoints in the same controller handle the same condition?
+- **Tests that codify a bug.** If a changed test asserts a *current defect* (e.g. `Assert.ThrowsAsync<NullReferenceException>` with a "known bug" note) rather than intended behavior, flag it.
+
+Open referenced/sibling files with Read/Grep before concluding — don't infer from the hunk alone.
+
 ## 5. Reconcile + validate (this is the point of the skill)
 - **Merge duplicates** across the external reviewers and your own; record who raised each (`raised by: …`). Agreement raises confidence.
 - **Validate against the diff:** for every finding, confirm its `file` + `line` + `side` actually appear in the DIFF. Drop or correct any finding whose line isn't in the diff (kills hallucinated lines and avoids 422s on posting).
