@@ -140,6 +140,36 @@ fi
 { echo; echo "## Diff to review"; echo; } >> "$PROMPT"
 cat "$DIFF" >> "$PROMPT"
 
+# ---- append full content of each changed file -------------------------------
+# Reviewers run isolated in $RUN with no repo access, so a 3-line diff hunk hides
+# unused imports, missing namespace imports, and intra-file contradictions. Snapshot
+# the full post-change version of every changed file (read from the working tree) so
+# reviewers can reason about the whole file, not just the hunk. Files that don't
+# resolve (e.g. --diff mode run outside the repo, or a deletion) are simply skipped.
+FILE_CAP="${FULLFILE_LINE_CAP:-3000}"
+mapfile -t CHANGED < <(grep '^+++ b/' "$DIFF" | sed 's#^+++ b/##' | grep -v '^/dev/null$' | sort -u)
+if [ "${#CHANGED[@]}" -gt 0 ]; then
+  { echo; echo "## Full content of changed files (post-change)"; echo; echo \
+    "Each changed file in full below, so you can catch issues the diff hunk hides"; echo \
+    "(unused/missing imports, intra-file contradictions, whole-file context). Still"; echo \
+    "report only on lines that appear in the diff above."; } >> "$PROMPT"
+  appended=0
+  for f in "${CHANGED[@]}"; do
+    [ -f "$f" ] || continue
+    n="$(wc -l < "$f")"
+    { echo; echo "### $f"; echo '```'; } >> "$PROMPT"
+    if [ "$n" -gt "$FILE_CAP" ]; then
+      head -n "$FILE_CAP" "$f" >> "$PROMPT"
+      { echo "... [truncated: $n lines total, showing first $FILE_CAP]"; } >> "$PROMPT"
+    else
+      cat "$f" >> "$PROMPT"
+    fi
+    echo '```' >> "$PROMPT"
+    appended=$((appended+1))
+  done
+  echo "› full-file context: attached $appended/${#CHANGED[@]} changed files" >&2
+fi
+
 # ---- resolve reviewer set ---------------------------------------------------
 if [ -n "$REVIEWERS_OVERRIDE" ]; then
   mapfile -t NAMES < <(echo "$REVIEWERS_OVERRIDE" | tr ',' '\n' | sed '/^$/d')

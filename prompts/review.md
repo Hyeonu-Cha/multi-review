@@ -19,8 +19,24 @@ source files** — you only emit JSON findings (a later reconcile pass merges an
 7. Null/empty handling, defaults, validation, mapping, side effects.
 8. Performance concerns introduced by the change.
 9. Maintainability only where it creates real production or upgrade risk.
+10. Compilation/build breakers — a referenced type/member/namespace that isn't imported
+    or doesn't exist, a signature that won't bind, a removed symbol still in use. If a
+    changed line cannot compile, that's at least `high`.
+11. Unused imports/usings introduced by the change (only when the change adds them) —
+    flag as `low` (noise; breaks builds that treat warnings as errors).
+12. Contract/consistency defects: a request/response DTO that exposes or requires a field
+    it shouldn't (contradicting its base type, its doc comment, or how the endpoint uses
+    it); an HTTP status code inconsistent with sibling endpoints (e.g. 400 for a
+    not-found condition the other endpoints return 404 for); a test that asserts a *known
+    bug / current defect* rather than intended behavior (it will have to be rewritten when
+    the bug is fixed — prefer asserting the domain-level failure).
 
 Every finding must resolve to a concrete, fixable issue on a specific changed line.
+
+> **Use the whole file, report only on changed lines.** Below the diff you are given the
+> **full post-change content of every changed file**. Use it to resolve symbols, spot
+> unused/missing imports, and catch intra-file contradictions a 3-line hunk hides — but a
+> finding's `line`/`side` must still point at a line that appears in the **diff**.
 
 ## What to report
 
