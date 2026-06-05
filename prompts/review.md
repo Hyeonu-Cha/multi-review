@@ -30,6 +30,13 @@ source files** — you only emit JSON findings (a later reconcile pass merges an
     not-found condition the other endpoints return 404 for); a test that asserts a *known
     bug / current defect* rather than intended behavior (it will have to be rewritten when
     the bug is fixed — prefer asserting the domain-level failure).
+13. Missing security/guard gate vs siblings: a new or changed endpoint/handler that skips
+    a guard the other handlers in the **same file** apply — auth/session validation,
+    input validation, a `FailedInitialChecks`-style precondition, ownership/tenant checks
+    — before doing work. An auth/session gate the siblings have and this one omits is at
+    least `high` (an unauthenticated caller can reach the action). Only assert this from
+    siblings visible in the changed file's full content below; if the sibling handlers
+    aren't in front of you, don't guess.
 
 Every finding must resolve to a concrete, fixable issue on a specific changed line.
 

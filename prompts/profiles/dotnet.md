@@ -23,3 +23,21 @@ Minimal hosting model & `Program.cs` wiring · endpoint routing · middleware or
 (esp. auth/authz placement) · `IOptions` / configuration binding · nullable reference
 type implications · Native AOT risks · trimming risks · APIs deprecated/removed in
 ASP.NET Core / .NET 9 · package support status for the target framework.
+
+### Dependency-injection registration correctness (startup-breaking — weight `high`)
+
+A wrong DI registration compiles fine and throws only at startup or first resolve, so
+check the diff's `Program.cs`/service-registration lines against how the type is consumed:
+
+- **`AddDbContextFactory<TContext>` does NOT register `TContext` itself**, only
+  `IDbContextFactory<TContext>`. If anything still constructor-injects `TContext`
+  directly, it throws `InvalidOperationException: Unable to resolve service for type …`.
+  Switching `AddDbContext` → `AddDbContextFactory` (or vice-versa) without updating every
+  consumer is a startup break. Register both (`AddDbContext` + `AddDbContextFactory`) if
+  both injection styles are used.
+- **Lifetime / captive-dependency mismatch:** a singleton (or the factory used by one)
+  injecting a scoped service like a `DbContext`; `AddDbContext` is scoped by default and
+  cannot be injected into a singleton — that's why a singleton resolver needs the factory.
+- **Missing registration / duplicate or conflicting registration** for a service the diff
+  newly injects; interface registered but the diff injects the concrete type (or vice
+  versa); `TryAdd*` vs `Add*` changing which implementation wins.
