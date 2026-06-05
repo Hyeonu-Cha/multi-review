@@ -147,7 +147,16 @@ cat "$DIFF" >> "$PROMPT"
 # reviewers can reason about the whole file, not just the hunk. Files that don't
 # resolve (e.g. --diff mode run outside the repo, or a deletion) are simply skipped.
 FILE_CAP="${FULLFILE_LINE_CAP:-3000}"
-mapfile -t CHANGED < <(grep '^+++ b/' "$DIFF" | sed 's#^+++ b/##' | grep -v '^/dev/null$' | sort -u)
+# Extract changed paths from the `+++` header lines. Git quotes paths containing
+# spaces/special chars as `+++ "b/path with spaces"`, so strip an optional leading
+# quote and the `b/` prefix and a trailing quote. (Non-ASCII octal escapes inside a
+# quoted path aren't decoded — those files just won't resolve and are skipped below.)
+mapfile -t CHANGED < <(grep -E '^\+\+\+ ' "$DIFF" \
+  | sed -E 's/^\+\+\+ //; s/^"//; s/^b\///; s/"$//' \
+  | grep -v '^/dev/null$' | sort -u)
+# Fence with FOUR backticks so a changed file that itself contains a ``` fence
+# (e.g. any .md file) can't prematurely close the wrapper.
+FENCE='````'
 if [ "${#CHANGED[@]}" -gt 0 ]; then
   { echo; echo "## Full content of changed files (post-change)"; echo; echo \
     "Each changed file in full below, so you can catch issues the diff hunk hides"; echo \
@@ -156,15 +165,18 @@ if [ "${#CHANGED[@]}" -gt 0 ]; then
   appended=0
   for f in "${CHANGED[@]}"; do
     [ -f "$f" ] || continue
+    # Skip binary (and empty) files — their bytes would pollute the prompt. grep -I
+    # treats a binary file as no-match, so this is false for binary and empty files.
+    grep -Iq . "$f" || continue
     n="$(wc -l < "$f")"
-    { echo; echo "### $f"; echo '```'; } >> "$PROMPT"
+    { echo; echo "### $f"; echo "$FENCE"; } >> "$PROMPT"
     if [ "$n" -gt "$FILE_CAP" ]; then
       head -n "$FILE_CAP" "$f" >> "$PROMPT"
       { echo "... [truncated: $n lines total, showing first $FILE_CAP]"; } >> "$PROMPT"
     else
       cat "$f" >> "$PROMPT"
     fi
-    echo '```' >> "$PROMPT"
+    echo "$FENCE" >> "$PROMPT"
     appended=$((appended+1))
   done
   echo "› full-file context: attached $appended/${#CHANGED[@]} changed files" >&2
