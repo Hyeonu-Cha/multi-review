@@ -147,13 +147,15 @@ cat "$DIFF" >> "$PROMPT"
 # reviewers can reason about the whole file, not just the hunk. Files that don't
 # resolve (e.g. --diff mode run outside the repo, or a deletion) are simply skipped.
 FILE_CAP="${FULLFILE_LINE_CAP:-3000}"
-# Extract changed paths from the `+++` header lines. Git quotes paths containing
-# spaces/special chars as `+++ "b/path with spaces"`, so strip an optional leading
-# quote and the `b/` prefix and a trailing quote. (Non-ASCII octal escapes inside a
-# quoted path aren't decoded — those files just won't resolve and are skipped below.)
-mapfile -t CHANGED < <(grep -E '^\+\+\+ ' "$DIFF" \
+# Extract changed paths from the `+++` header lines. Anchor on the real git post-image
+# prefix (`+++ b/` or quoted `+++ "b/`) so an added source line whose content is `++ x`
+# — which renders as `+++ x` in the diff — can't be mistaken for a file header. Git
+# quotes paths with spaces/special chars as `+++ "b/path with spaces"`, so strip an
+# optional leading quote, the `b/` prefix, and a trailing quote. (Non-ASCII octal escapes
+# inside a quoted path aren't decoded — those files just won't resolve and are skipped.)
+mapfile -t CHANGED < <(grep -E '^\+\+\+ "?b/' "$DIFF" \
   | sed -E 's/^\+\+\+ //; s/^"//; s/^b\///; s/"$//' \
-  | grep -v '^/dev/null$' | sort -u)
+  | sort -u)
 # Fence with FOUR backticks so a changed file that itself contains a ``` fence
 # (e.g. any .md file) can't prematurely close the wrapper.
 FENCE='````'
@@ -167,14 +169,16 @@ if [ "${#CHANGED[@]}" -gt 0 ]; then
     [ -f "$f" ] || continue
     # Skip binary (and empty) files — their bytes would pollute the prompt. grep -I
     # treats a binary file as no-match, so this is false for binary and empty files.
-    grep -Iq . "$f" || continue
+    # `--` guards filenames that start with a hyphen (e.g. -config.json) from being
+    # parsed as options by grep/head/cat.
+    grep -Iq . -- "$f" || continue
     n="$(wc -l < "$f")"
     { echo; echo "### $f"; echo "$FENCE"; } >> "$PROMPT"
     if [ "$n" -gt "$FILE_CAP" ]; then
-      head -n "$FILE_CAP" "$f" >> "$PROMPT"
+      head -n "$FILE_CAP" -- "$f" >> "$PROMPT"
       { echo "... [truncated: $n lines total, showing first $FILE_CAP]"; } >> "$PROMPT"
     else
-      cat "$f" >> "$PROMPT"
+      cat -- "$f" >> "$PROMPT"
     fi
     echo "$FENCE" >> "$PROMPT"
     appended=$((appended+1))
