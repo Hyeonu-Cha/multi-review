@@ -38,8 +38,19 @@ code-review skill and tools. The shared instruction tells each agent to **write 
 findings to a file** with its own file-write tool — we read that file, **not stdout**.
 This matters: some CLIs (e.g. `agy`/Antigravity) render only to a TTY and emit nothing to
 a pipe, but still do file/tool work fine headless — so capturing via the written file
-works without any terminal. A final headless reconcile pass merges duplicates, boosts
-issues multiple models agree on, drops noise, and ranks by severity.
+works without any terminal. Output that arrives wrapped in markdown fences or prose is
+**salvaged** (the outermost JSON object is extracted; original kept at `<name>.json.raw`)
+instead of dropping the reviewer, and individual findings missing a typed
+`file`/`line`/`severity` are dropped so downstream stages can trust every field. A final
+headless reconcile pass merges duplicates, boosts issues multiple models agree on, drops
+noise, and ranks by severity.
+
+**Context handed to every reviewer:** the diff; the **change intent** (PR
+title/description in PR mode, commit subjects in branch mode) so reviewers can flag
+"code does X, description says Y"; and the full post-change content of every changed
+file — snapshotted from the **PR head commit** (PR mode) or **`HEAD`** (branch mode),
+never from whatever the working tree happens to hold, so reviewers are never handed
+stale files labeled "post-change".
 
 > Reviewers run with permissions bypassed (`--dangerously-skip-permissions` etc.) so the
 > file write isn't blocked — the instruction is scoped to "review + write JSON, don't
@@ -114,6 +125,8 @@ bin/multi-review --base origin/main # review current branch vs base (default)
 bin/multi-review 42 --reviewers agy,codex     # override reviewer set
 bin/multi-review 42 --reconciler gemini       # use gemini to reconcile instead of claude -p
 bin/multi-review 42 --post                    # post combined review to the PR
+bin/multi-review 42 --post --max-comments 10  # cap inline comments (default 20)
+bin/multi-review 42 --post --block            # let REQUEST_CHANGES actually block the PR
 bin/multi-review 42 --timeout 1200            # wait longer for reviewers to finish
 
 # Skill path (in Claude Code):
@@ -123,10 +136,25 @@ bin/multi-review 42 --timeout 1200            # wait longer for reviewers to fin
 Output is printed and saved to `out/<timestamp>/review.json` (a GitHub reviews-API
 payload). `--post` sends it to the PR as **inline comments** via
 `gh api repos/{owner}/{repo}/pulls/{number}/reviews` (one comment per finding, on its
-specific line), with `event` set to `REQUEST_CHANGES` when any CRITICAL/HIGH finding
-exists, else `COMMENT`.
+specific line).
+
+### Posting safeguards
+
+- **Pinned to the reviewed head:** the payload carries `commit_id` (the PR head SHA),
+  so a push during the (long) review run can't shift comments onto the wrong lines.
+- **No duplicate comments on re-runs:** each posted comment carries a hidden
+  `multi-review:fp:<hash>` marker (path + line + severity); a later run on the same PR
+  fetches existing comments and skips findings already posted.
+- **Comment cap:** at most `--max-comments` (default 20) inline comments, ranked
+  most-important-first by the reconciler; the rest are noted in the review body.
+- **Non-blocking by default:** a `REQUEST_CHANGES` verdict is downgraded to `COMMENT`
+  unless you pass `--block` — an unverified model finding shouldn't gate merges.
 
 ## Configuration — `config/reviewers.json`
+
+(Set `MULTI_REVIEW_CONFIG=<path>` to point the engine at an alternate config — used by
+the tests. Set `MULTI_REVIEW_ROOT=<repo dir>` in your shell profile so the
+`/multi-review` skill can locate the tool without the `multi-review` alias.)
 
 ### Shared config (both skill and headless paths)
 
@@ -190,6 +218,16 @@ from `prompts/profiles/<name>.md` to the criteria — e.g. `"profile": "dotnet"`
 ASP.NET Core / .NET 9 migration checks. Override per run with `--profile <name>` (or
 `--profile none` to force generic). Add your own profile by dropping a `<name>.md` in
 `prompts/profiles/`.
+
+## Tests
+
+```bash
+bash tests/run.sh
+```
+
+Smoke-tests the engine with a **fake reviewer CLI** — no real AI CLI, network, or `gh`
+needed (bash + jq + git only). Covers fan-out + findings capture, JSON salvage of
+fence/prose-wrapped output, per-finding sanitization, and flag plumbing.
 
 ## Status
 
