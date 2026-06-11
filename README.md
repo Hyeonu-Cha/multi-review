@@ -173,11 +173,6 @@ the tests. Set `MULTI_REVIEW_ROOT=<repo dir>` in your shell profile so the
 - `{PROMPT}` — path to criteria + JSON-schema file (review.md + diff)
 - `{OUT}` — path agent must write JSON findings to
 
-**Profile:** Optional language/framework addendum appended to criteria:
-```json
-"profile": ""  # empty = generic. "dotnet" appends prompts/profiles/dotnet.md
-```
-
 ### Headless-only config (terminal/CI path, no session)
 
 The `reconciler` merges external reviewers' findings. **Not used in `/multi-review` skill** 
@@ -211,13 +206,12 @@ Toggle reviewers with `enabled`. **Tune each `cmd` per CLI** — the non-interac
 and permission-bypass flag differ (`claude -p … --dangerously-skip-permissions`,
 `agy --print … --dangerously-skip-permissions`, `codex exec …`, `gemini -p … --yolo`).
 
-### Language/framework profile
+### Review criteria
 
-`prompts/review.md` is now **generic**. Set a top-level `"profile"` to append an addendum
-from `prompts/profiles/<name>.md` to the criteria — e.g. `"profile": "dotnet"` for the
-ASP.NET Core / .NET 9 migration checks. Override per run with `--profile <name>` (or
-`--profile none` to force generic). Add your own profile by dropping a `<name>.md` in
-`prompts/profiles/`.
+`prompts/review.md` is **language-neutral** — correctness, security, concurrency,
+resource handling, broken references (compile-time or import/run-time), contract
+consistency, intent mismatch. Each reviewer applies the idioms of whatever
+language/framework the diff touches; nothing in the criteria assumes a specific stack.
 
 ## Tests
 
