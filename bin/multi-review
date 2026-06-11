@@ -206,7 +206,11 @@ cat "$DIFF" >> "$PROMPT"
 # against, so the working tree is the only option there.
 SNAP_REF=""
 if [ -n "$PR" ]; then
-  if git fetch -q origin "refs/pull/$PR/head" 2>/dev/null; then SNAP_REF="FETCH_HEAD"
+  # Fetch the PR head by repo URL (gh resolves the right repo regardless of the local
+  # remote name — `origin` may be `upstream` in a fork), falling back to `origin`.
+  REPO_URL="$(gh repo view --json url -q .url 2>/dev/null | tr -d '\r')"
+  if [ -n "$REPO_URL" ] && git fetch -q "$REPO_URL" "refs/pull/$PR/head" 2>/dev/null; then SNAP_REF="FETCH_HEAD"
+  elif git fetch -q origin "refs/pull/$PR/head" 2>/dev/null; then SNAP_REF="FETCH_HEAD"
   else echo "› warn: could not fetch refs/pull/$PR/head — file snapshots fall back to the working tree and may be stale" >&2; fi
 elif [ -z "$DIFF_FILE" ]; then
   SNAP_REF="HEAD"
@@ -495,16 +499,18 @@ if [ "$POST" -eq 1 ]; then
   [ "$BLOCK" -eq 0 ] && [ "$(jqr -r '.event' "$FINAL")" = "REQUEST_CHANGES" ] \
     && echo "› verdict REQUEST_CHANGES downgraded to COMMENT (pass --block to let a model block merges)"
 
-  # Fingerprint each comment (path + line + severity tag) and skip findings a previous
-  # run already posted — re-running on the same PR must not duplicate comments. The
-  # marker rides in an HTML comment, invisible when rendered on GitHub.
+  # Fingerprint each comment (path + line + first body line, which carries the
+  # `[[SEVERITY]] title`) and skip findings a previous run already posted — re-running
+  # on the same PR must not duplicate comments. Keying on the title (not just the
+  # severity prefix) keeps two distinct findings on the same line+severity distinct.
+  # The marker rides in an HTML comment, invisible when rendered on GitHub.
   fp_for() { printf '%s' "$1" | git hash-object --stdin | cut -c1-12; }
   EXISTING="$(gh api "repos/$OWNER/$REPO/pulls/$PR/comments" --paginate -q '.[].body' 2>/dev/null \
     | grep -o 'multi-review:fp:[0-9a-f]\{12\}' | sort -u || true)"
   KEEP="$RUN/_post_comments.json"; echo '[]' > "$KEEP"
   skipped=0
   while IFS= read -r c; do
-    key="$(jq -r '"\(.path):\(.line):\(.body | split("]]")[0])"' <<<"$c")"
+    key="$(jq -r '"\(.path):\(.line):\(.body // "" | split("\n")[0])"' <<<"$c")"
     fp="$(fp_for "$key")"
     if grep -q "multi-review:fp:$fp" <<<"$EXISTING"; then skipped=$((skipped+1)); continue; fi
     jq --argjson c "$(jq --arg fp "$fp" '.body += "\n\n<!-- multi-review:fp:\($fp) -->"' <<<"$c")" \
