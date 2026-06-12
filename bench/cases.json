@@ -1,0 +1,44 @@
+[
+  {
+    "id": "div-by-zero",
+    "class": "correctness (sanity floor — every model should catch this)",
+    "file": "app/stats.py",
+    "line": 9,
+    "pattern": "zero|division|divide"
+  },
+  {
+    "id": "missing-auth-guard",
+    "class": "guard vs siblings (goal 14 — evidence lives in unchanged sibling handlers.py)",
+    "file": "app/stats.py",
+    "line": 6,
+    "pattern": "auth|session|guard|unauthenticated|check_session"
+  },
+  {
+    "id": "wiring-mismatch",
+    "class": "registration vs consumption (goal 15 — registry.py registers \"db\", consumer asks \"db_client\")",
+    "file": "app/stats.py",
+    "line": 7,
+    "pattern": "db_client|register|registry|resolve|KeyError"
+  },
+  {
+    "id": "broken-reference",
+    "class": "broken reference (goal 10 — util.helper_all does not exist; util.py defines helper)",
+    "file": "app/stats.py",
+    "line": 8,
+    "pattern": "helper_all|AttributeError|does not exist|not defined|no attribute|missing"
+  },
+  {
+    "id": "unused-import",
+    "class": "unused import (goal 11)",
+    "file": "app/stats.py",
+    "line": 1,
+    "pattern": "hashlib|unused"
+  },
+  {
+    "id": "intent-mismatch",
+    "class": "intent mismatch (goal 13 — commit says read-only, purge_old_records deletes)",
+    "file": "app/stats.py",
+    "line": 10,
+    "pattern": "read.?only|intent|purge|delete|mismatch|side.?effect"
+  }
+]
