@@ -29,7 +29,6 @@ EOF
 mkconfig() {  # mkconfig <fake reviewer script> — config pointing at the fake CLI
   cat > "$TMP/config.json" <<EOF
 {
-  "profile": "",
   "reviewers": [ { "name": "fake", "enabled": true, "cmd": "bash $1 {OUT}" } ],
   "instruction": "review {DIFF} per {PROMPT}; write findings to {OUT}",
   "reconciler": { "name": "true", "cmd": "true" }
