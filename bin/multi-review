@@ -34,9 +34,13 @@
 #   MULTI_REVIEW_CONFIG  alternate config path (default: config/reviewers.json;
 #                        used by tests)
 #   FULLFILE_LINE_CAP    per-file line cap for the full-file context (default 3000)
+#   FULLFILE_TOTAL_CAP   total line budget across all changed-file content
+#                        (default 30000; 0 = unlimited)
 #   RELATED_TOTAL_CAP    total line budget for related unchanged files attached as
 #                        context — same-folder siblings + imported files
 #                        (default 10000; 0 disables)
+#   MULTI_REVIEW_KEEP    how many out/<run> workspaces to retain (default 20;
+#                        0 = keep everything)
 #
 # Backends:
 #   none    — default. Reviewers run as headless background jobs. No GUI needed.
@@ -139,11 +143,27 @@ case "$BACKEND" in
 esac
 
 # ---- per-run workspace ------------------------------------------------------
-RUN="$ROOT/out/$(date +%Y%m%d-%H%M%S)"
-mkdir -p "$RUN"
+# mktemp suffix: timestamps are second-granular, so two runs in the same second
+# (parallel invocations, test suites) would otherwise share — and corrupt — a dir.
+mkdir -p "$ROOT/out"
+RUN="$(mktemp -d "$ROOT/out/$(date +%Y%m%d-%H%M%S)-XXXXXX")"
 DIFF="$RUN/diff.patch"
 PROMPT="$RUN/prompt.md"
 FINAL="$RUN/review.json"
+
+# Retention: workspaces hoard full repo snapshots + diffs; don't keep them forever.
+# Keep the newest MULTI_REVIEW_KEEP runs (default 20; 0 = keep everything).
+KEEP="${MULTI_REVIEW_KEEP:-20}"
+[[ "$KEEP" =~ ^[0-9]+$ ]] || KEEP=20
+if [ "$KEEP" -gt 0 ]; then
+  # Bash glob sorts lexicographically == chronologically for timestamped names; no
+  # ls|sort|head pipeline to trip over pipefail. Unmatched glob stays literal, so
+  # guard with -d before slicing.
+  prune=( "$ROOT"/out/[0-9]*/ )
+  if [ -d "${prune[0]}" ] && [ "${#prune[@]}" -gt "$KEEP" ]; then
+    rm -rf "${prune[@]:0:${#prune[@]}-KEEP}"
+  fi
+fi
 
 # ---- obtain the diff --------------------------------------------------------
 if [ -n "$DIFF_FILE" ]; then
@@ -209,6 +229,10 @@ snapshot() {
   else [ -f "$1" ] && cat -- "$1"; fi
 }
 FILE_CAP="${FULLFILE_LINE_CAP:-3000}"
+# Total budget across ALL changed files (default 30000; 0 = unlimited). Without it a
+# 30-file PR could build a ~90k-line prompt that silently exceeds a reviewer CLI's
+# context window — the worst starvation exactly on the PRs that most need review.
+TOTAL_CAP="${FULLFILE_TOTAL_CAP:-30000}"
 # Extract changed paths from the `+++` header lines. Anchor on the real git post-image
 # prefix (`+++ b/` or quoted `+++ "b/`) so an added source line whose content is `++ x`
 # — which renders as `+++ x` in the diff — can't be mistaken for a file header. Git
@@ -226,7 +250,7 @@ if [ "${#CHANGED[@]}" -gt 0 ]; then
     "Each changed file in full below, so you can catch issues the diff hunk hides"; echo \
     "(unused/missing imports, intra-file contradictions, whole-file context). Still"; echo \
     "report only on lines that appear in the diff above."; } >> "$PROMPT"
-  appended=0
+  appended=0; omitted=0; total_lines=0
   SNAPF="$RUN/.snapshot"
   for f in "${CHANGED[@]}"; do
     snapshot "$f" > "$SNAPF" || { rm -f "$SNAPF"; continue; }
@@ -235,6 +259,10 @@ if [ "${#CHANGED[@]}" -gt 0 ]; then
     [ -s "$SNAPF" ] || continue
     grep -Iq . "$SNAPF" || continue
     n="$(wc -l < "$SNAPF")"
+    eff="$n"; if [ "$eff" -gt "$FILE_CAP" ]; then eff="$FILE_CAP"; fi
+    if [ "$TOTAL_CAP" -gt 0 ] && [ $((total_lines + eff)) -gt "$TOTAL_CAP" ]; then
+      omitted=$((omitted+1)); continue
+    fi
     { echo; echo "### $f"; echo "$FENCE"; } >> "$PROMPT"
     if [ "$n" -gt "$FILE_CAP" ]; then
       head -n "$FILE_CAP" "$SNAPF" >> "$PROMPT"
@@ -243,10 +271,14 @@ if [ "${#CHANGED[@]}" -gt 0 ]; then
       cat "$SNAPF" >> "$PROMPT"
     fi
     echo "$FENCE" >> "$PROMPT"
+    total_lines=$((total_lines + eff))
     appended=$((appended+1))
   done
   rm -f "$SNAPF"
-  echo "› full-file context: attached $appended/${#CHANGED[@]} changed files (from ${SNAP_REF:-working tree})" >&2
+  if [ "$omitted" -gt 0 ]; then
+    { echo; echo "_${omitted} changed file(s) omitted here by the total context budget — for those, review from their diff hunks above._"; } >> "$PROMPT"
+  fi
+  echo "› full-file context: attached $appended/${#CHANGED[@]} changed files, $total_lines lines (from ${SNAP_REF:-working tree}; $omitted omitted by total cap)" >&2
 fi
 
 # ---- append related unchanged files (context only) ---------------------------
