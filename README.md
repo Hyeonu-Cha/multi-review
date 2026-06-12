@@ -1,7 +1,7 @@
 # multi-review
 
 Multi-CLI code review. Fan a PR diff out to several AI-CLI reviewers
-(Antigravity/`agy`, Codex, Gemini) running **headlessly in parallel**,
+(Antigravity/`agy`, Codex, Gemini, Copilot) running **headlessly in parallel**,
 then **reconcile** their findings into one de-duplicated, severity-ranked review.
 Claude reviews via the `/multi-review` skill (in-session, not headless).
 
@@ -89,7 +89,7 @@ comfortable handing to an autonomous agent.
   and `cygpath`
 - **`jq`** — `winget install jqlang.jq`
 - **`gh`** — only for reviewing/posting to GitHub PRs
-- The reviewer CLIs you enable (`agy`, `codex`, `gemini`, …) on your `PATH`, **each 
+- The reviewer CLIs you enable (`agy`, `codex`, `gemini`, `copilot`, …) on your `PATH`, **each 
   logged in**. (Claude reviews via the `/multi-review` skill in-session, not as a headless CLI.)
 - **WezTerm** — *optional*, only if you want `--backend wezterm` to watch reviewers live
 
@@ -100,7 +100,7 @@ logins. Logins are per-machine **by design** (subscriptions / OAuth tokens don't
 shouldn't travel between PCs), so expect to install + sign in once per machine.
 
 1. Install **Git for Windows** and **`jq`** (see Requirements above).
-2. Install the reviewer CLIs you want (`agy`, `codex`, `gemini`, …) and **log into each**.
+2. Install the reviewer CLIs you want (`agy`, `codex`, `gemini`, `copilot`, …) and **log into each**.
    (Claude is used via the `/multi-review` skill in Claude Code, not installed separately.)
 3. Clone the repo:
    ```
@@ -135,7 +135,7 @@ bin/multi-review 42 --post --block            # let REQUEST_CHANGES actually blo
 bin/multi-review 42 --timeout 1200            # wait longer for reviewers to finish
 
 # Skill path (in Claude Code):
-/multi-review 42                    # reviews PR #42 with agy + codex + gemini + in-session claude
+/multi-review 42                    # reviews PR #42 with agy + codex + gemini + copilot + in-session claude
 ```
 
 Output is printed and saved to `out/<timestamp>/review.json` (a GitHub reviews-API
@@ -167,7 +167,7 @@ the tests. Set `MULTI_REVIEW_ROOT=<repo dir>` in your shell profile so the
 **Reviewers:** Each has `name`, `enabled` toggle, and `cmd` (CLI's one-shot "print" mode). 
 `{INSTR}` is replaced with shared `instruction` (paths substituted, single-quoted).
 
-**Default enabled: `agy`, `codex`, `gemini`. Claude intentionally disabled 
+**Default enabled: `agy`, `codex`, `gemini`, `copilot`. Claude intentionally disabled 
 (reviews via `/multi-review` skill in-session).** Example:
 
 ```json
@@ -214,7 +214,7 @@ Two paths, zero `-p` in the skill:
 
 Toggle reviewers with `enabled`. **Tune each `cmd` per CLI** — the non-interactive flag
 and permission-bypass flag differ (`claude -p … --dangerously-skip-permissions`,
-`agy --print … --dangerously-skip-permissions`, `codex exec …`, `gemini -p … --yolo`).
+`agy --print … --dangerously-skip-permissions`, `codex exec …`, `gemini -p … --yolo`, `copilot -p … --allow-all-tools --allow-all-paths`).
 
 ### Review criteria
 
