@@ -624,16 +624,20 @@ if [ "$POST" -eq 1 ]; then
   fp_for() { printf '%s' "$1" | git hash-object --stdin | cut -c1-12; }
   EXISTING="$(gh api "repos/$OWNER/$REPO/pulls/$PR/comments" --paginate -q '.[].body' 2>/dev/null \
     | grep -o 'multi-review:fp:[0-9a-f]\{12\}' | sort -u || true)"
-  KEEP="$RUN/_post_comments.json"; echo '[]' > "$KEEP"
+  # (POSTKEEP, not KEEP — KEEP is the workspace-retention count set at startup.)
+  # Kept comments stream to a JSONL tmp file, slurped into an array once at the end —
+  # no per-comment read-modify-write of a growing JSON file.
+  POSTKEEP="$RUN/_post_comments.json"
+  : > "$POSTKEEP.jsonl"
   skipped=0
   while IFS= read -r c; do
     key="$(jq -r '"\(.path):\(.line):\(.body // "" | split("\n")[0])"' <<<"$c")"
     fp="$(fp_for "$key")"
     if grep -q "multi-review:fp:$fp" <<<"$EXISTING"; then skipped=$((skipped+1)); continue; fi
-    jq --argjson c "$(jq --arg fp "$fp" '.body += "\n\n<!-- multi-review:fp:\($fp) -->"' <<<"$c")" \
-      '. + [$c]' "$KEEP" > "$KEEP.tmp" && mv "$KEEP.tmp" "$KEEP"
+    jq -c --arg fp "$fp" '.body += "\n\n<!-- multi-review:fp:\($fp) -->"' <<<"$c" >> "$POSTKEEP.jsonl"
   done < <(jqr -c '.comments[]' "$PAYLOAD")
-  jqr --slurpfile cs "$KEEP" '.comments = $cs[0]' "$PAYLOAD" > "$PAYLOAD.tmp" && mv "$PAYLOAD.tmp" "$PAYLOAD"
+  jq -s '.' "$POSTKEEP.jsonl" > "$POSTKEEP" && rm -f "$POSTKEEP.jsonl"
+  jqr --slurpfile cs "$POSTKEEP" '.comments = $cs[0]' "$PAYLOAD" > "$PAYLOAD.tmp" && mv "$PAYLOAD.tmp" "$PAYLOAD"
   [ "$skipped" -gt 0 ] && echo "› skipped $skipped finding(s) already posted by a previous run"
 
   if [ "$(jqr '.comments|length' "$PAYLOAD")" -eq 0 ] && [ "$skipped" -gt 0 ]; then

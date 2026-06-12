@@ -3,7 +3,8 @@
 # network, or gh needed (bash + jq + git only). Run: bash tests/run.sh
 #
 # Covers: fan-out + findings capture, JSON salvage (fence/prose-wrapped output),
-# per-finding sanitization (malformed findings dropped), and help/flag plumbing.
+# per-finding sanitization (malformed findings dropped), related-file context,
+# workspace collision, context budgets, the posting path (fake gh), and flag plumbing.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -26,12 +27,13 @@ index 0000000..1111111 100644
      return 0
 EOF
 
-mkconfig() {  # mkconfig <fake reviewer script> — config pointing at the fake CLI
+mkconfig() {  # mkconfig <fake reviewer script> [reconciler cmd] — config for the fakes
+  local rec="${2:-true}"
   cat > "$TMP/config.json" <<EOF
 {
   "reviewers": [ { "name": "fake", "enabled": true, "cmd": "bash $1 {OUT}" } ],
   "instruction": "review {DIFF} per {PROMPT}; write findings to {OUT}",
-  "reconciler": { "name": "true", "cmd": "true" }
+  "reconciler": { "name": "true", "cmd": "$rec" }
 }
 EOF
 }
@@ -147,7 +149,80 @@ if [ -n "$ws" ] && grep -q 'omitted here by the total context budget' "$ws/promp
   ok "FULLFILE_TOTAL_CAP omits over-budget changed files with a note"
 else bad "FULLFILE_TOTAL_CAP omits over-budget changed files with a note: $out"; fi
 
-# ---- test 7: help/flag plumbing -------------------------------------------------
+# ---- tests 7-9: posting path, driven by a fake `gh` ------------------------------
+# The riskiest code (writes to real PRs) gets a shim: fake gh serves the diff,
+# intent, head SHA, and existing comments, and captures the reviews-API POST.
+mkdir -p "$TMP/bin"
+cat > "$TMP/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+args="$*"
+case "$args" in
+  "pr diff"*)              cat "$FAKE_GH_DIFF";;
+  *"--json title,body"*)   printf 'Title: fix div by zero\n\nintent body\n';;
+  *"--json headRefOid"*)   echo "$FAKE_GH_SHA";;
+  *"--json url"*)          echo "";;   # no URL → snapshot falls back to working tree
+  *"--json owner,name"*)   echo "own repo";;
+  *"pulls/7/comments"*)    cat "$FAKE_GH_COMMENTS" 2>/dev/null || true;;
+  *"pulls/7/reviews"*)     prev=""; for a in "$@"; do
+                             [ "$prev" = "--input" ] && cp "$a" "$FAKE_GH_POSTED"
+                             prev="$a"
+                           done;;
+  *) echo "fake-gh: unhandled: $args" >&2; exit 1;;
+esac
+EOF
+chmod +x "$TMP/bin/gh"
+# Reconciler emits REQUEST_CHANGES + 3 comments: two share line+severity but differ
+# by title (regression check for the fp-collision fix), one is lowest-ranked.
+cat > "$TMP/fakerec.sh" <<'EOF'
+#!/usr/bin/env bash
+cat > "$1" <<'JSON'
+{"body":"combined review","event":"REQUEST_CHANGES","comments":[
+  {"path":"src/app.py","line":2,"side":"RIGHT","body":"[[high]] div by zero A\ndetail A"},
+  {"path":"src/app.py","line":2,"side":"RIGHT","body":"[[high]] div by zero B\ndetail B"},
+  {"path":"src/app.py","line":2,"side":"RIGHT","body":"[[low]] minor C\ndetail C"}]}
+JSON
+EOF
+export FAKE_GH_DIFF="$TMP/fixture.patch" FAKE_GH_SHA="0123456789abcdef0123456789abcdef01234567"
+export FAKE_GH_COMMENTS="$TMP/gh-comments.txt" FAKE_GH_POSTED="$TMP/gh-posted.json"
+mkconfig "$TMP/fake1.sh" "bash $TMP/fakerec.sh {OUT}"
+post_run() {  # post_run [extra engine flags...] — PR-mode --post run under the fake gh
+  (cd "$REPO" && PATH="$TMP/bin:$PATH" MULTI_REVIEW_CONFIG="$TMP/config.json" \
+    bash "$ROOT/bin/multi-review" 7 --post --max-comments 2 --timeout 60 "$@" 2>&1)
+}
+
+# test 7: first post — pinned, downgraded, capped, fingerprinted
+rm -f "$FAKE_GH_POSTED"; : > "$FAKE_GH_COMMENTS"
+out="$(post_run)"
+if [ -f "$FAKE_GH_POSTED" ] \
+   && jq -e --arg sha "$FAKE_GH_SHA" '.commit_id == $sha' "$FAKE_GH_POSTED" >/dev/null \
+   && jq -e '.event == "COMMENT"' "$FAKE_GH_POSTED" >/dev/null \
+   && jq -e '.comments | length == 2' "$FAKE_GH_POSTED" >/dev/null \
+   && jq -e '.body | contains("omitted by --max-comments")' "$FAKE_GH_POSTED" >/dev/null \
+   && jq -e '[.comments[].body | contains("multi-review:fp:")] | all' "$FAKE_GH_POSTED" >/dev/null; then
+  ok "post: commit_id pinned, REQUEST_CHANGES downgraded, capped at 2, fp markers added"
+else bad "post: commit_id pinned, REQUEST_CHANGES downgraded, capped at 2, fp markers added: $out"; fi
+if jq -r '.comments[].body' "$FAKE_GH_POSTED" 2>/dev/null \
+   | grep -o 'multi-review:fp:[0-9a-f]\{12\}' | sort | uniq -d | grep -q .; then
+  bad "post: same-line same-severity findings get distinct fingerprints"
+else ok "post: same-line same-severity findings get distinct fingerprints"; fi
+
+# test 8: re-run with those comments already on the PR — nothing new posted
+jq -r '.comments[].body' "$FAKE_GH_POSTED" > "$FAKE_GH_COMMENTS"
+rm -f "$FAKE_GH_POSTED"
+out="$(post_run)"
+if grep -q 'skipped 2 finding(s) already posted' <<<"$out" \
+   && grep -q 'nothing new to post' <<<"$out" && [ ! -f "$FAKE_GH_POSTED" ]; then
+  ok "post: re-run dedupes already-posted findings, posts nothing"
+else bad "post: re-run dedupes already-posted findings, posts nothing: $out"; fi
+
+# test 9: --block lets REQUEST_CHANGES through
+: > "$FAKE_GH_COMMENTS"; rm -f "$FAKE_GH_POSTED"
+out="$(post_run --block)"
+if [ -f "$FAKE_GH_POSTED" ] && jq -e '.event == "REQUEST_CHANGES"' "$FAKE_GH_POSTED" >/dev/null; then
+  ok "post: --block preserves REQUEST_CHANGES"
+else bad "post: --block preserves REQUEST_CHANGES: $out"; fi
+
+# ---- test 10: help/flag plumbing -------------------------------------------------
 if bash "$ROOT/bin/multi-review" --help | grep -q -- '--max-comments'; then
   ok "--max-comments documented in --help"
 else bad "--max-comments documented in --help"; fi
