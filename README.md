@@ -164,6 +164,11 @@ specific line).
 the tests. Set `MULTI_REVIEW_ROOT=<repo dir>` in your shell profile so the
 `/multi-review` skill can locate the tool without the `multi-review` alias.)
 
+**Context/retention env knobs:** `FULLFILE_LINE_CAP` (per-file, default 3000) ·
+`FULLFILE_TOTAL_CAP` (all changed files, default 30000, `0` = unlimited) ·
+`RELATED_TOTAL_CAP` (related unchanged files, default 10000, `0` disables) ·
+`MULTI_REVIEW_KEEP` (workspaces kept under `out/`, default 20, `0` = keep everything).
+
 ### Shared config (both skill and headless paths)
 
 **Reviewers:** Each has `name`, `enabled` toggle, and `cmd` (CLI's one-shot "print" mode). 
