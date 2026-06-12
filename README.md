@@ -18,7 +18,8 @@ Goal: a self-hosted replacement for Copilot review that cross-checks multiple mo
    │  get diff  →  build criteria+schema file
    ├─ bg job: agy --print '<instruction>'   ──▶ agy.json     ┐
    ├─ bg job: codex exec '<instruction>'    ──▶ codex.json   ├─ JSON findings
-   ├─ bg job: gemini -p '<instruction>'     ──▶ gemini.json  ┘
+   ├─ bg job: gemini -p '<instruction>'     ──▶ gemini.json  │
+   ├─ bg job: copilot -p '<instruction>'    ──▶ copilot.json ┘
    ├─ [session Claude reviews (step 4)]
    └─ [session Claude reconciles (step 5)] → unified review → optional inline post
 ```
@@ -29,7 +30,8 @@ multi-review <PR#>  [or --base <ref> / --diff <file>]
    │  get diff  →  build criteria+schema file
    ├─ bg job: agy --print '<instruction>'   ──▶ agy.json     ┐
    ├─ bg job: codex exec '<instruction>'    ──▶ codex.json   ├─ JSON findings
-   ├─ bg job: gemini -p '<instruction>'     ──▶ gemini.json  ┘
+   ├─ bg job: gemini -p '<instruction>'     ──▶ gemini.json  │
+   ├─ bg job: copilot -p '<instruction>'    ──▶ copilot.json ┘
    └─ reconciler.cmd (e.g. claude -p) → review.json → optional inline post
 ```
 
