@@ -143,8 +143,9 @@ specific line).
 - **Pinned to the reviewed head:** the payload carries `commit_id` (the PR head SHA),
   so a push during the (long) review run can't shift comments onto the wrong lines.
 - **No duplicate comments on re-runs:** each posted comment carries a hidden
-  `multi-review:fp:<hash>` marker (path + line + severity); a later run on the same PR
-  fetches existing comments and skips findings already posted.
+  `multi-review:fp:<hash>` marker (path + line + the comment's first line, which carries
+  severity and title — so two distinct findings on the same line stay distinct); a later
+  run on the same PR fetches existing comments and skips findings already posted.
 - **Comment cap:** at most `--max-comments` (default 20) inline comments, ranked
   most-important-first by the reconciler; the rest are noted in the review body.
 - **Non-blocking by default:** a `REQUEST_CHANGES` verdict is downgraded to `COMMENT`
@@ -196,7 +197,11 @@ Two paths, zero `-p` in the skill:
 - **`/multi-review` skill (Claude session)** — engine runs with `--no-reconcile`. 
   In-session Claude does BOTH: reviews (step 4, independent pass) + reconciles (step 5, 
   merges findings). **Zero `claude -p` spawned. One Claude, one quota.** That's why `claude` 
-  is disabled as a headless reviewer: session covers it.
+  is disabled as a headless reviewer: session covers it. The in-session pass also has
+  **repo access** the isolated reviewers don't, so it chases the cross-file classes they
+  are structurally blind to: a guard preamble enforced by *unchanged* sibling handlers,
+  a registration↔consumer mismatch where only one side is in the diff, symbol references
+  that don't bind, tests that codify a known bug.
 - **`multi-review` terminal / CI (no session)** — no in-session Claude, so `reconciler.cmd` 
   runs headless (`claude -p` by default). Avoid it: `--reconciler gemini` or `--reconciler codex`.
 
@@ -210,8 +215,11 @@ and permission-bypass flag differ (`claude -p … --dangerously-skip-permissions
 
 `prompts/review.md` is **language-neutral** — correctness, security, concurrency,
 resource handling, broken references (compile-time or import/run-time), contract
-consistency, intent mismatch. Each reviewer applies the idioms of whatever
-language/framework the diff touches; nothing in the criteria assumes a specific stack.
+consistency, intent mismatch, missing guards vs sibling code paths (an auth/validation
+preamble the siblings apply and the changed handler skips), and wiring/registration
+mismatches (a dependency registered one way but consumed another — compiles fine, dies
+at startup). Each reviewer applies the idioms of whatever language/framework the diff
+touches; nothing in the criteria assumes a specific stack.
 
 ## Tests
 
