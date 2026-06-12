@@ -274,27 +274,33 @@ if [ "${#ALLFILES[@]}" -gt 0 ]; then
   for f in "${CHANGED[@]}"; do REL_SEEN["$f"]=1; done   # never re-attach changed files
   CAND=()
   # Tier 1: same-folder, same-extension siblings — where guard conventions live.
+  # One compiled grep per dir|ext instead of a bash loop over every repo file —
+  # bash pattern loops crawl on large repos.
+  re_esc() { printf '%s' "$1" | sed 's/[][\.|$(){}?+*^]/\\&/g'; }
   for f in "${CHANGED[@]}"; do
     d="${f%/*}"; [ "$d" = "$f" ] && d="."
     ext="${f##*.}"; [ "$ext" = "$f" ] && continue
     key="$d|$ext"; [ -n "${REL_DIRDONE[$key]:-}" ] && continue; REL_DIRDONE[$key]=1
+    prefix=""; [ "$d" != "." ] && prefix="$(re_esc "$d")/"
     cnt=0
-    for c in "${ALLFILES[@]}"; do
-      if [ "$d" = "." ]; then
-        case "$c" in */*) continue;; *."$ext") ;; *) continue;; esac
-      else
-        case "$c" in "$d"/*/*) continue;; "$d"/*."$ext") ;; *) continue;; esac
-      fi
+    while IFS= read -r c; do
       [ -n "${REL_SEEN[$c]:-}" ] && continue
       REL_SEEN["$c"]=1; CAND+=("$c"); cnt=$((cnt+1))
       [ "$cnt" -ge 3 ] && break
-    done
+    done < <(printf '%s\n' "${ALLFILES[@]}" | grep -E "^${prefix}[^/]+\.$(re_esc "$ext")$" || true)
   done
   # Tier 2: imported files — match the last path/module segment of import-like lines
   # against repo filenames. Misses just mean "not attached", never wrong content.
+  # Three patterns: a `from` clause anywhere on the line (JS/TS `import {x} from 'y'`
+  # — the module is after `from`, not after `import` — and Python `from y import x`);
+  # a `require(...)` anywhere (usually preceded by const/let, so no line anchor); and
+  # line-anchored single-keyword imports (using/use/#include/bare `import y`).
   # `|| true`: no import lines at all is a normal outcome, not an error (grep exits 1).
   SEGS="$(for f in "${CHANGED[@]}"; do snapshot "$f" 2>/dev/null || true; done \
-    | sed -nE 's@^[[:space:]]*(import|from|using|use|require|include|#include)[[:space:]<("'\''=]+([A-Za-z0-9_@./-]+).*@\2@p' \
+    | sed -nE \
+        -e 's@.*\<from[[:space:]]+["'\''(]*([A-Za-z0-9_@./-]+).*@\1@p' \
+        -e 's@.*\<require[[:space:]]*\(["'\'']*([A-Za-z0-9_@./-]+).*@\1@p' \
+        -e 's@^[[:space:]]*(import|using|use|include|#include)[[:space:]<("'\''=]+([A-Za-z0-9_@./-]+).*@\2@p' \
     | sed -E 's@.*[/.]@@' | grep -E '^[A-Za-z0-9_-]{2,}$' | sort -u | head -n 100 || true)"
   if [ -n "$SEGS" ]; then
     ALT="$(paste -sd'|' <<<"$SEGS")"
