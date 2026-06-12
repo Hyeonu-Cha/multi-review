@@ -47,10 +47,15 @@ noise, and ranks by severity.
 
 **Context handed to every reviewer:** the diff; the **change intent** (PR
 title/description in PR mode, commit subjects in branch mode) so reviewers can flag
-"code does X, description says Y"; and the full post-change content of every changed
+"code does X, description says Y"; the full post-change content of every changed
 file — snapshotted from the **PR head commit** (PR mode) or **`HEAD`** (branch mode),
 never from whatever the working tree happens to hold, so reviewers are never handed
-stale files labeled "post-change".
+stale files labeled "post-change"; and a **budgeted set of related unchanged files**
+(same-folder siblings, where guard/validation conventions live, plus files the changed
+files import) so isolated reviewers can catch a handler that skips a guard its siblings
+apply or a reference that doesn't bind — classes that are invisible from the diff alone.
+Budget: `RELATED_TOTAL_CAP` total lines (default 10000; `0` disables), smallest files
+first; related files are context only — findings still land on diff lines.
 
 > Reviewers run with permissions bypassed (`--dangerously-skip-permissions` etc.) so the
 > file write isn't blocked — the instruction is scoped to "review + write JSON, don't

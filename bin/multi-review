@@ -34,6 +34,9 @@
 #   MULTI_REVIEW_CONFIG  alternate config path (default: config/reviewers.json;
 #                        used by tests)
 #   FULLFILE_LINE_CAP    per-file line cap for the full-file context (default 3000)
+#   RELATED_TOTAL_CAP    total line budget for related unchanged files attached as
+#                        context — same-folder siblings + imported files
+#                        (default 10000; 0 disables)
 #
 # Backends:
 #   none    — default. Reviewers run as headless background jobs. No GUI needed.
@@ -244,6 +247,97 @@ if [ "${#CHANGED[@]}" -gt 0 ]; then
   done
   rm -f "$SNAPF"
   echo "› full-file context: attached $appended/${#CHANGED[@]} changed files (from ${SNAP_REF:-working tree})" >&2
+fi
+
+# ---- append related unchanged files (context only) ---------------------------
+# Isolated reviewers can't open the repo, so anything that lives in UNCHANGED files
+# is invisible to them: the guard/validation conventions sibling handlers apply
+# (review goal 14), the base types/symbols changed lines reference (goal 10), the
+# other side of a registration↔consumer pair (goal 15). Attach a budgeted selection:
+#   Tier 1 — same-folder siblings sharing a changed file's extension (≤3 per folder)
+#   Tier 2 — files whose name matches the last segment of an import-like statement
+#            (import/from/using/use/require/#include) in a changed file
+# Budget: RELATED_TOTAL_CAP total lines (default 10000; 0 disables). Smallest files
+# first so the budget buys the most coverage; files over FULLFILE_LINE_CAP are
+# skipped outright (truncated context is poor context). These files are context
+# only — findings must still point at diff lines, which review.md enforces.
+RELATED_CAP="${RELATED_TOTAL_CAP:-10000}"
+ALLFILES=()
+if [ "$RELATED_CAP" -gt 0 ] && [ "${#CHANGED[@]}" -gt 0 ]; then
+  # Candidate universe = files at the snapshot ref (tracked files in --diff mode);
+  # outside a git repo this is empty and the whole feature is skipped.
+  if [ -n "$SNAP_REF" ]; then mapfile -t ALLFILES < <(git ls-tree -r --name-only "$SNAP_REF" 2>/dev/null)
+  else mapfile -t ALLFILES < <(git ls-files 2>/dev/null); fi
+fi
+if [ "${#ALLFILES[@]}" -gt 0 ]; then
+  declare -A REL_SEEN REL_DIRDONE
+  for f in "${CHANGED[@]}"; do REL_SEEN["$f"]=1; done   # never re-attach changed files
+  CAND=()
+  # Tier 1: same-folder, same-extension siblings — where guard conventions live.
+  for f in "${CHANGED[@]}"; do
+    d="${f%/*}"; [ "$d" = "$f" ] && d="."
+    ext="${f##*.}"; [ "$ext" = "$f" ] && continue
+    key="$d|$ext"; [ -n "${REL_DIRDONE[$key]:-}" ] && continue; REL_DIRDONE[$key]=1
+    cnt=0
+    for c in "${ALLFILES[@]}"; do
+      if [ "$d" = "." ]; then
+        case "$c" in */*) continue;; *."$ext") ;; *) continue;; esac
+      else
+        case "$c" in "$d"/*/*) continue;; "$d"/*."$ext") ;; *) continue;; esac
+      fi
+      [ -n "${REL_SEEN[$c]:-}" ] && continue
+      REL_SEEN["$c"]=1; CAND+=("$c"); cnt=$((cnt+1))
+      [ "$cnt" -ge 3 ] && break
+    done
+  done
+  # Tier 2: imported files — match the last path/module segment of import-like lines
+  # against repo filenames. Misses just mean "not attached", never wrong content.
+  # `|| true`: no import lines at all is a normal outcome, not an error (grep exits 1).
+  SEGS="$(for f in "${CHANGED[@]}"; do snapshot "$f" 2>/dev/null || true; done \
+    | sed -nE 's@^[[:space:]]*(import|from|using|use|require|include|#include)[[:space:]<("'\''=]+([A-Za-z0-9_@./-]+).*@\2@p' \
+    | sed -E 's@.*[/.]@@' | grep -E '^[A-Za-z0-9_-]{2,}$' | sort -u | head -n 100 || true)"
+  if [ -n "$SEGS" ]; then
+    ALT="$(paste -sd'|' <<<"$SEGS")"
+    while IFS= read -r c; do
+      [ -n "${REL_SEEN[$c]:-}" ] && continue
+      REL_SEEN["$c"]=1; CAND+=("$c")
+    done < <(printf '%s\n' "${ALLFILES[@]}" | grep -E "(^|/)($ALT)\.[A-Za-z0-9]+$" | head -n 20)
+  fi
+  if [ "${#CAND[@]}" -gt 0 ]; then
+    RELDIR="$RUN/.related"; mkdir -p "$RELDIR"
+    META="$RELDIR/meta"; : > "$META"
+    i=0
+    for c in "${CAND[@]}"; do
+      out="$RELDIR/$i"; i=$((i+1))
+      snapshot "$c" > "$out" 2>/dev/null || { rm -f "$out"; continue; }
+      [ -s "$out" ] || continue
+      grep -Iq . "$out" || continue          # skip binary/empty
+      n="$(wc -l < "$out")"
+      [ "$n" -gt "$FILE_CAP" ] && continue   # whole-file or nothing
+      printf '%s\t%s\t%s\n' "$n" "$((i-1))" "$c" >> "$META"
+    done
+    attached=0; budget="$RELATED_CAP"; total="$(wc -l < "$META")"
+    hdr=0
+    while IFS=$'\t' read -r n idx c; do
+      [ "$n" -le "$budget" ] || continue
+      if [ "$hdr" -eq 0 ]; then
+        { echo; echo "## Related unchanged files (context only)"; echo; echo \
+          "Unchanged files likely relevant to the change: same-folder siblings (the"; echo \
+          "guard/validation conventions a changed handler should match — goal 14) and"; echo \
+          "files the changed files import (the symbols/base types they reference)."; echo \
+          "CONTEXT ONLY — never report findings on these files; every finding must"; echo \
+          "still point at a line that appears in the diff above."; } >> "$PROMPT"
+        hdr=1
+      fi
+      { echo; echo "### $c"; echo "$FENCE"; } >> "$PROMPT"
+      cat "$RELDIR/$idx" >> "$PROMPT"
+      echo "$FENCE" >> "$PROMPT"
+      budget=$((budget - n)); attached=$((attached+1))
+      [ "$budget" -le 0 ] && break
+    done < <(sort -n "$META")
+    rm -rf "$RELDIR"
+    echo "› related context: attached $attached/$total candidate files (budget $RELATED_CAP lines)" >&2
+  fi
 fi
 
 # ---- resolve reviewer set ---------------------------------------------------

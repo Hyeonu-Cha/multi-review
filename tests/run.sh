@@ -97,7 +97,43 @@ if [ -n "$f" ] && jq -e '.findings | length == 1' "$f" >/dev/null 2>&1 \
   ok "malformed findings dropped, valid kept"
 else bad "malformed findings dropped, valid kept: $out"; fi
 
-# ---- test 4: help/flag plumbing -------------------------------------------------
+# ---- test 4: related unchanged files attached as context -----------------------
+# A temp repo where the changed file has a same-folder sibling and an import target;
+# both should land in the "Related unchanged files" prompt section, within budget.
+sleep 2
+REPO="$TMP/repo"
+mkdir -p "$REPO/src" "$REPO/lib"
+printf 'import util\n\ndef main():\n    return 0\n'      > "$REPO/src/app.py"
+printf 'def guarded_handler():\n    check_auth()\n'      > "$REPO/src/sibling.py"
+printf 'def util():\n    pass\n'                         > "$REPO/lib/util.py"
+git -C "$REPO" init -q
+git -C "$REPO" -c user.name=t -c user.email=t@t add -A
+git -C "$REPO" -c user.name=t -c user.email=t@t commit -qm init
+mkconfig "$TMP/fake1.sh"
+out="$(cd "$REPO" && MULTI_REVIEW_CONFIG="$TMP/config.json" \
+  bash "$ROOT/bin/multi-review" --diff "$TMP/fixture.patch" --no-reconcile --timeout 60 2>&1)"
+ws="$(grep -o 'WORKSPACE=.*' <<<"$out" | cut -d= -f2)"
+if [ -n "$ws" ] && grep -q '## Related unchanged files' "$ws/prompt.md" \
+   && grep -q '### src/sibling.py' "$ws/prompt.md"; then
+  ok "same-folder sibling attached as related context"
+else bad "same-folder sibling attached as related context: $out"; fi
+if [ -n "$ws" ] && grep -q '### lib/util.py' "$ws/prompt.md"; then
+  ok "imported file attached as related context"
+else bad "imported file attached as related context"; fi
+# changed file must appear once (changed section), never again under related
+if [ -n "$ws" ] && [ "$(grep -c '### src/app.py' "$ws/prompt.md")" -eq 1 ]; then
+  ok "changed file not re-attached as related"
+else bad "changed file not re-attached as related"; fi
+sleep 2
+# budget 0 disables the feature entirely
+out="$(cd "$REPO" && MULTI_REVIEW_CONFIG="$TMP/config.json" RELATED_TOTAL_CAP=0 \
+  bash "$ROOT/bin/multi-review" --diff "$TMP/fixture.patch" --no-reconcile --timeout 60 2>&1)"
+ws="$(grep -o 'WORKSPACE=.*' <<<"$out" | cut -d= -f2)"
+if [ -n "$ws" ] && ! grep -q '## Related unchanged files' "$ws/prompt.md"; then
+  ok "RELATED_TOTAL_CAP=0 disables related context"
+else bad "RELATED_TOTAL_CAP=0 disables related context"; fi
+
+# ---- test 5: help/flag plumbing -------------------------------------------------
 if bash "$ROOT/bin/multi-review" --help | grep -q -- '--max-comments'; then
   ok "--max-comments documented in --help"
 else bad "--max-comments documented in --help"; fi
