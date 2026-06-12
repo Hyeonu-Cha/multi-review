@@ -13,7 +13,7 @@
 #
 # A finding scores a hit when: same file, line within ±3, and title+detail matches
 # the case's keyword pattern (so co-located cases can't cross-credit each other).
-set -uo pipefail
+set -euo pipefail
 
 # Windows jq emits CRLF; strip CR so values feeding shell vars/--argjson stay clean.
 jqr() { jq "$@" | tr -d '\r'; }
@@ -109,7 +109,7 @@ declare -A FINDINGS
 while IFS= read -r line; do
   name="${line#FINDINGS[}"; name="${name%%]=*}"
   FINDINGS["$name"]="${line#*=}"
-done < <(grep -o 'FINDINGS\[[^]]*\]=.*' <<<"$out")
+done < <(grep -o 'FINDINGS\[[^]]*\]=.*' <<<"$out" | tr -d '\r')
 
 if [ "${#FINDINGS[@]}" -eq 0 ]; then
   echo "no reviewer produced findings — nothing to score" >&2
