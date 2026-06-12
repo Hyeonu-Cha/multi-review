@@ -241,7 +241,20 @@ bash tests/run.sh
 
 Smoke-tests the engine with a **fake reviewer CLI** — no real AI CLI, network, or `gh`
 needed (bash + jq + git only). Covers fan-out + findings capture, JSON salvage of
-fence/prose-wrapped output, per-finding sanitization, and flag plumbing.
+fence/prose-wrapped output, per-finding sanitization, related-file context, workspace
+collision, context budgets, the posting path (fake `gh`), and flag plumbing.
+
+## Recall benchmark
+
+```bash
+bash bench/run.sh                # ⚠ costs real quota on every enabled reviewer
+```
+
+Builds a tiny fixture repo with **six planted bugs** (`bench/cases.json`) — division by
+zero, missing auth guard vs sibling handlers, registration↔consumption mismatch, broken
+reference, unused import, intent mismatch — fans the change to the real reviewer CLIs,
+and prints a per-reviewer hit/miss matrix with recall scores. Run it before and after a
+prompt/criteria change to measure whether detection actually improved.
 
 ## Status
 
