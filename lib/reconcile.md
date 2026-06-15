@@ -18,6 +18,14 @@ JSON payload ready to POST to the GitHub reviews API**.
   (added/unchanged → `RIGHT` + new-file line; removed → `LEFT` + old-file line). Drop or
   correct any finding whose line is not present — this kills hallucinated lines and avoids
   422 errors when posting.
+- **Verify the line's CONTENT, then relocate if needed**: presence isn't enough — some
+  reviewers report a line that exists in the diff but points at the *wrong* content (e.g.
+  they counted the line's position within the diff text, which is offset from the real
+  file line by the header lines). For each finding, read the code at its reported line and
+  check it actually matches what the finding describes. If it doesn't, find the line in
+  the diff that the finding *is* about and move `line`/`side` there. Only drop it if no
+  line in the diff matches the described issue. This is the main reason you have the full
+  diff: do not trust a reviewer's line number blindly.
 - **Rank**: order comments by severity then confidence (most important first).
 - **Preserve line targeting**: carry each validated finding's `file`→`path`, `line`,
   `side`, and any `start_line`/`start_side` through so the comment lands on the right line.

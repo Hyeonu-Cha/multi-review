@@ -51,6 +51,7 @@ Open referenced/sibling files with Read/Grep before concluding — don't infer f
 ## 5. Reconcile + validate (this is the point of the skill)
 - **Merge duplicates** across the external reviewers and your own; record who raised each (`raised by: …`). Agreement raises confidence.
 - **Validate against the diff:** for every finding, confirm its `file` + `line` + `side` actually appear in the DIFF. Drop or correct any finding whose line isn't in the diff (kills hallucinated lines and avoids 422s on posting).
+- **Verify line content, then relocate:** presence isn't enough — some reviewers (copilot especially) report a line that's *in* the diff but points at the wrong content, because they counted the line's position within the diff text instead of the real file line. Read the code at each finding's reported line; if it doesn't match what the finding describes, move `line`/`side` to the diff line the finding is actually about. Only drop it if nothing in the diff matches. You have the diff and full files open — don't trust a reviewer's line number blindly.
 - **Drop noise:** remove false positives, pure style nits, and low-confidence single-source items you judge wrong.
 - **Rank** by severity then confidence.
 
