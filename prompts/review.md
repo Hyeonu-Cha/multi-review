@@ -113,12 +113,16 @@ Line/side rules (needed so the reconcile pass can post inline accurately):
 - Added or unchanged line → use the **new-file** line number, `side` = `"RIGHT"`.
 - Removed line → use the **old-file** line number, `side` = `"LEFT"`.
 - **`line` is the line number INSIDE THE FILE, not the line's position in the diff text.**
-  Read it from the hunk header `@@ -old,n +new,m @@`: the first body line after the
-  header is new-file line `new`. Walk down, **+1 for each context (space-prefixed) or
-  added (`+`) line**, and do **not** count removed (`-`) lines toward the new-file number.
-  Never count the `diff --git`, `index`, `---`, `+++`, or `@@` lines — they are not file
-  lines. (A common mistake: reporting the line's ordinal position within the diff block,
-  which is off by the number of header lines. Don't.)
+  Read it from the hunk header `@@ -old,n +new,m @@`:
+  - **RIGHT** (added/context): the first body line after the header is new-file line
+    `new`. Walk down, **+1 for each context (space-prefixed) or added (`+`) line**, and
+    do **not** count removed (`-`) lines.
+  - **LEFT** (removed): the first body line after the header is old-file line `old`. Walk
+    down, **+1 for each context (space-prefixed) or removed (`-`) line**, and do **not**
+    count added (`+`) lines.
+  - Never count the `diff --git`, `index`, `---`, `+++`, or `@@` lines — they are not file
+    lines. (A common mistake: reporting the line's ordinal position within the diff block,
+    which is off by the number of header lines. Don't.)
   - Worked example:
     ```
     @@ -0,0 +1,3 @@
