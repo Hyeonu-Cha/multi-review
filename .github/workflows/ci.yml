@@ -1,0 +1,29 @@
+name: ci
+
+# Runs the engine's syntax check and smoke tests on every PR and on pushes to main.
+# This is the automated gate that replaces the Gemini Code Assist bot (sunset
+# 2026-07-17). Needs only bash + jq + git — all present on ubuntu-latest — because
+# tests/run.sh drives a fake reviewer CLI and a fake gh (no real AI CLI or network).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify jq is available
+        run: jq --version
+      - name: Shell syntax check
+        run: |
+          bash -n bin/multi-review
+          bash -n tests/run.sh
+          bash -n bench/run.sh
+      - name: Smoke tests
+        run: bash tests/run.sh
