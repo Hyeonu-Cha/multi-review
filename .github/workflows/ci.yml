@@ -25,5 +25,11 @@ jobs:
           bash -n bin/multi-review
           bash -n tests/run.sh
           bash -n bench/run.sh
+      - name: ShellCheck
+        # --severity=warning gates on real bugs (unquoted/undefined vars, bad tests)
+        # without churning on intentional style notes — e.g. SC2016 fires on the
+        # single-quoted jq filters, which MUST NOT be shell-expanded. shellcheck is
+        # preinstalled on ubuntu-latest runners.
+        run: shellcheck --severity=warning bin/multi-review tests/run.sh bench/run.sh
       - name: Smoke tests
         run: bash tests/run.sh

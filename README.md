@@ -168,6 +168,8 @@ the tests. Set `MULTI_REVIEW_ROOT=<repo dir>` in your shell profile so the
 `FULLFILE_TOTAL_CAP` (all changed files, default 30000, `0` = unlimited) ·
 `RELATED_TOTAL_CAP` (related unchanged files, default 10000, `0` disables) ·
 `MULTI_REVIEW_KEEP` (workspaces kept under `out/`, default 20, `0` = keep everything).
+Each must be a non-negative integer; a non-integer value is ignored with a warning and
+the default is used (so a typo can't silently disable a budget).
 
 ### Shared config (both skill and headless paths)
 
@@ -242,19 +244,25 @@ bash tests/run.sh
 Smoke-tests the engine with a **fake reviewer CLI** — no real AI CLI, network, or `gh`
 needed (bash + jq + git only). Covers fan-out + findings capture, JSON salvage of
 fence/prose-wrapped output, per-finding sanitization, related-file context, workspace
-collision, context budgets, the posting path (fake `gh`), and flag plumbing.
+collision, context budgets, non-integer env-knob coercion, the posting path (fake `gh`),
+and flag plumbing. CI (`.github/workflows/ci.yml`) runs these on every PR, plus
+`bash -n` syntax checks and `shellcheck --severity=warning` on all three scripts.
 
-## Recall benchmark
+## Recall + precision benchmark
 
 ```bash
 bash bench/run.sh                # ⚠ costs real quota on every enabled reviewer
 ```
 
-Builds a tiny fixture repo with **six planted bugs** (`bench/cases.json`) — division by
-zero, missing auth guard vs sibling handlers, registration↔consumption mismatch, broken
-reference, unused import, intent mismatch — fans the change to the real reviewer CLIs,
-and prints a per-reviewer hit/miss matrix with recall scores. Run it before and after a
-prompt/criteria change to measure whether detection actually improved.
+Builds a tiny fixture repo whose change adds **six planted bugs** (`bench/cases.json`) —
+division by zero, missing auth guard vs sibling handlers, registration↔consumption
+mismatch, broken reference, unused import, intent mismatch — **plus a clean control file
+(`app/clean.py`) with no bugs**, then fans the change to the real reviewer CLIs. It prints
+a per-reviewer hit/miss matrix with a **recall** row (planted bugs caught) and a
+**false-pos(clean)** row (findings on the clean file — noise; `0` is ideal). Scoring both
+in one fan-out keeps a trigger-happy reviewer — perfect recall by flagging everything —
+from looking good. Run it before and after a prompt/criteria change to measure whether
+detection improved *without* getting noisier.
 
 ## Status
 

@@ -93,6 +93,15 @@ clean_findings() {
 }
 # The reconciler output must be a postable reviews-API payload, not just valid JSON.
 valid_payload() { jqr -e 'type=="object" and (.body|type=="string") and (.event|type=="string") and (.comments|type=="array")' "$1" >/dev/null 2>&1; }
+# Validate a numeric env knob: echo it back if it's a non-negative integer, else warn
+# and echo the default. A non-integer cap is worse than ignored — it's later compared
+# with `-gt`, which aborts that `[` test ("integer expression expected") once per file
+# and silently defeats the budget — so coerce it here, at the one place it's read.
+numenv() { # numenv VALUE DEFAULT NAME
+  if [[ "$1" =~ ^[0-9]+$ ]]; then printf '%s' "$1"
+  else [ -n "$1" ] && echo "multi-review: ignoring non-integer $3='$1', using $2" >&2
+       printf '%s' "$2"; fi
+}
 
 # ---- parse args -------------------------------------------------------------
 PR=""; DIFF_FILE=""; BASE="origin/main"
@@ -153,8 +162,7 @@ FINAL="$RUN/review.json"
 
 # Retention: workspaces hoard full repo snapshots + diffs; don't keep them forever.
 # Keep the newest MULTI_REVIEW_KEEP runs (default 20; 0 = keep everything).
-KEEP="${MULTI_REVIEW_KEEP:-20}"
-[[ "$KEEP" =~ ^[0-9]+$ ]] || KEEP=20
+KEEP="$(numenv "${MULTI_REVIEW_KEEP:-20}" 20 MULTI_REVIEW_KEEP)"
 if [ "$KEEP" -gt 0 ]; then
   # Bash glob sorts lexicographically == chronologically for timestamped names; no
   # ls|sort|head pipeline to trip over pipefail. Unmatched glob stays literal, so
@@ -228,11 +236,11 @@ snapshot() {
   if [ -n "$SNAP_REF" ]; then git show "$SNAP_REF:$1" 2>/dev/null
   else [ -f "$1" ] && cat -- "$1"; fi
 }
-FILE_CAP="${FULLFILE_LINE_CAP:-3000}"
+FILE_CAP="$(numenv "${FULLFILE_LINE_CAP:-3000}" 3000 FULLFILE_LINE_CAP)"
 # Total budget across ALL changed files (default 30000; 0 = unlimited). Without it a
 # 30-file PR could build a ~90k-line prompt that silently exceeds a reviewer CLI's
 # context window — the worst starvation exactly on the PRs that most need review.
-TOTAL_CAP="${FULLFILE_TOTAL_CAP:-30000}"
+TOTAL_CAP="$(numenv "${FULLFILE_TOTAL_CAP:-30000}" 30000 FULLFILE_TOTAL_CAP)"
 # Extract changed paths from the `+++` header lines. Anchor on the real git post-image
 # prefix (`+++ b/` or quoted `+++ "b/`) so an added source line whose content is `++ x`
 # — which renders as `+++ x` in the diff — can't be mistaken for a file header. Git
@@ -293,7 +301,7 @@ fi
 # first so the budget buys the most coverage; files over FULLFILE_LINE_CAP are
 # skipped outright (truncated context is poor context). These files are context
 # only — findings must still point at diff lines, which review.md enforces.
-RELATED_CAP="${RELATED_TOTAL_CAP:-10000}"
+RELATED_CAP="$(numenv "${RELATED_TOTAL_CAP:-10000}" 10000 RELATED_TOTAL_CAP)"
 ALLFILES=()
 if [ "$RELATED_CAP" -gt 0 ] && [ "${#CHANGED[@]}" -gt 0 ]; then
   # Candidate universe = files at the snapshot ref (tracked files in --diff mode);
