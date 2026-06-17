@@ -98,11 +98,13 @@ Reviewers run permission-bypassed, so a diff that contains prompt-injection text
   out of your source tree.
 
 These are soft guardrails plus defense-in-depth, **not a sandbox** — reviewers still run
-permission-bypassed and could climb out of the workspace. For untrusted PRs, prefer
-restricting each reviewer to read + write-findings tools via its CLI's own allowlist where
-supported, run the whole tool inside a container, and review the per-reviewer logs
-(`out/<ts>/<name>.log`) if anything looks off. Don't point this at diffs you wouldn't be
-comfortable handing to an autonomous agent.
+permission-bypassed and could climb out of the workspace. The default `copilot` reviewer is
+the broadest grant (`--allow-all-tools --allow-all-paths`); `--allow-all-paths` in particular
+lets it reach outside the per-run workspace, so tighten or drop it first if that matters to
+you. For untrusted PRs, prefer restricting each reviewer to read + write-findings tools via
+its CLI's own allowlist where supported, run the whole tool inside a container, and review
+the per-reviewer logs (`out/<ts>/<name>.log`) if anything looks off. Don't point this at diffs
+you wouldn't be comfortable handing to an autonomous agent.
 
 ## Requirements (Windows)
 
@@ -286,7 +288,7 @@ detection improved *without* getting noisier.
 
 ## Status
 
-Windows is the supported target. **Verified end-to-end headless on Windows (Git Bash):**
+**Verified end-to-end headless on Windows (Git Bash)** with the real reviewer CLIs:
 agy reviews as a background job and writes valid JSON findings; CRLF-safe config parsing;
 JSON-payload output; reconcile + console render; inline `--post`. Reviewers run their CLI's
 one-shot print mode and write findings to a file, so no terminal is needed — even
@@ -295,7 +297,7 @@ fine headless. Tune each reviewer's `cmd` per CLI as non-interactive flags diffe
 optional `--backend wezterm`/`tmux` live view spawns one pane per reviewer.
 
 The portable bash engine (fan-out, salvage, reconcile, posting) is exercised on
-Linux in CI (`bash tests/run.sh`, 17 smoke tests) and runs anywhere with bash ≥ 4,
+Linux in CI (`bash tests/run.sh`, 18 smoke tests) and runs anywhere with bash ≥ 4,
 `jq`, and `git`; the end-to-end "verified" claim above is specifically the Windows
 Git Bash path with the real reviewer CLIs.
 
