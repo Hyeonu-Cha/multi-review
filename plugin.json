@@ -1,6 +1,0 @@
-{
-  "name": "multi-review",
-  "version": "0.1.0",
-  "description": "Multi-CLI code review. Fans a PR diff to several AI reviewers in parallel, then reconciles into one ranked review.",
-  "skills": ["./skills/"]
-}
