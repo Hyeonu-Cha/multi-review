@@ -175,7 +175,7 @@ printf '%s\n' "$union_hits/${#IDS[@]}"
 printf '%-22s' "false-pos(clean)"
 for n in "${NAMES[@]}"; do
   fp="$(jqr -r '[.findings[]
-    | select((.file=="app/clean.py") or ((.file|tostring)|endswith("app/clean.py")))
+    | select((.file=="app/clean.py") or ((.file|tostring)|endswith("/app/clean.py")))
     ] | length' "${FINDINGS[$n]}" 2>/dev/null || echo '?')"
   printf '%-10s' "${fp:-0}"
 done

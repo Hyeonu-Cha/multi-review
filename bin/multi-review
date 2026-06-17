@@ -93,13 +93,15 @@ clean_findings() {
 }
 # The reconciler output must be a postable reviews-API payload, not just valid JSON.
 valid_payload() { jqr -e 'type=="object" and (.body|type=="string") and (.event|type=="string") and (.comments|type=="array")' "$1" >/dev/null 2>&1; }
-# Validate a numeric env knob: echo it back if it's a non-negative integer, else warn
-# and echo the default. A non-integer cap is worse than ignored — it's later compared
+# Validate a numeric env knob: print it back if it's a non-negative integer, else warn
+# and print the default. A non-integer cap is worse than ignored — it's later compared
 # with `-gt`, which aborts that `[` test ("integer expression expected") once per file
 # and silently defeats the budget — so coerce it here, at the one place it's read.
+# printf (not echo) for the value/warning: $1 is arbitrary env input that could begin
+# with `-` or hold backslashes.
 numenv() { # numenv VALUE DEFAULT NAME
   if [[ "$1" =~ ^[0-9]+$ ]]; then printf '%s' "$1"
-  else [ -n "$1" ] && echo "multi-review: ignoring non-integer $3='$1', using $2" >&2
+  else [ -n "$1" ] && printf "multi-review: ignoring non-integer %s='%s', using %s\n" "$3" "$1" "$2" >&2
        printf '%s' "$2"; fi
 }
 
