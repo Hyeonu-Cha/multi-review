@@ -1,0 +1,16 @@
+{
+  "name": "multi-review",
+  "owner": {
+    "name": "Hyeonu Cha"
+  },
+  "metadata": {
+    "description": "Multi-CLI code review — fan a PR diff out to several AI reviewers in parallel and reconcile into one ranked review."
+  },
+  "plugins": [
+    {
+      "name": "multi-review",
+      "source": "./",
+      "description": "Multi-CLI code review. Fans a PR diff out to several AI reviewers in parallel, adds Claude's own pass, then reconciles into one de-duplicated, line-validated, severity-ranked review and optionally posts it inline to the PR."
+    }
+  ]
+}

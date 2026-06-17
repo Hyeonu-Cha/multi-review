@@ -33,3 +33,38 @@ jobs:
         run: shellcheck --severity=warning bin/multi-review tests/run.sh bench/run.sh
       - name: Smoke tests
         run: bash tests/run.sh
+
+  # Validates the plugin packaging so a broken manifest can't reach a publish.
+  # The jq checks are the hard gate (offline, deterministic); the official
+  # `claude plugin validate` runs as a best-effort cross-check (it pulls the CLI
+  # over the network, so it must not be able to block the build by itself).
+  validate-plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Manifest structural check (jq)
+        run: |
+          set -e
+          echo "› .claude-plugin/plugin.json"
+          jq -e '
+            (.name|type=="string" and (test("^[a-z0-9][a-z0-9-]*$")))
+            and (.version|type=="string")
+            and (.description|type=="string")
+            and (.author.name|type=="string")
+            and (.license|type=="string")
+            and (.keywords|type=="array")
+          ' .claude-plugin/plugin.json >/dev/null
+          echo "› .claude-plugin/marketplace.json"
+          jq -e '
+            (.name|type=="string")
+            and (.owner.name|type=="string")
+            and (.plugins|type=="array" and length>0)
+            and (all(.plugins[]; (.name|type=="string") and (.source|type=="string")))
+          ' .claude-plugin/marketplace.json >/dev/null
+          echo "› SKILL.md frontmatter present"
+          head -1 skills/multi-review/SKILL.md | grep -qx -- '---'
+      - name: Official plugin validate (best-effort)
+        continue-on-error: true
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude plugin validate . --strict

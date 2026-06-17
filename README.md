@@ -10,6 +10,26 @@ Goal: a self-hosted replacement for Copilot review that cross-checks multiple mo
 > **Headless by default** — external reviewers run as background jobs; no GUI needed. 
 > Optionally watch them live in **WezTerm/tmux panes** (`--backend wezterm`).
 
+## Install
+
+**As a Claude Code plugin** (recommended — gives you the `/multi-review` skill). This
+repo is its own plugin marketplace, so it's a two-line install:
+
+```
+/plugin marketplace add Hyeonu-Cha/multi-review
+/plugin install multi-review@multi-review
+```
+
+Then run `/multi-review <PR#>` in any session. Installing the plugin sets
+`$CLAUDE_PLUGIN_ROOT`, which the skill uses to locate `bin/`, `config/`, and `prompts/` —
+no alias or `MULTI_REVIEW_ROOT` needed. You still need the reviewer CLIs on your `PATH`
+and logged in (see Requirements).
+
+**As a standalone CLI** (for the headless terminal/CI path): `git clone` the repo and run
+`bin/multi-review` directly — see [Setup on a new Windows PC](#setup-on-a-new-windows-pc).
+The engine itself needs only **bash ≥ 4, `jq`, and `git`**, so it also runs on Linux/WSL
+and any macOS with a modern bash; `gh` is required only for reviewing/posting to GitHub PRs.
+
 ## How it works
 
 **Via `/multi-review` skill (in Claude session):**
@@ -273,3 +293,12 @@ one-shot print mode and write findings to a file, so no terminal is needed — e
 TTY-rendering CLIs like `agy`/Antigravity (which emit nothing to a pipe) do file/tool work
 fine headless. Tune each reviewer's `cmd` per CLI as non-interactive flags differ. The
 optional `--backend wezterm`/`tmux` live view spawns one pane per reviewer.
+
+The portable bash engine (fan-out, salvage, reconcile, posting) is exercised on
+Linux in CI (`bash tests/run.sh`, 17 smoke tests) and runs anywhere with bash ≥ 4,
+`jq`, and `git`; the end-to-end "verified" claim above is specifically the Windows
+Git Bash path with the real reviewer CLIs.
+
+## License
+
+[MIT](LICENSE) © Hyeonu Cha
