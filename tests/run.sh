@@ -230,6 +230,19 @@ if out="$(cd "$ROOT" && bash bin/multi-review --max-comments x 2>&1)"; [ $? -ne 
   ok "--max-comments rejects non-numeric values"
 else bad "--max-comments rejects non-numeric values"; fi
 
+# ---- test 11: non-integer cap env vars are coerced, not crashed ------------------
+# A non-integer cap used to spam "integer expression expected" (one per changed file)
+# and silently disable the budget. It must now coerce to the default with a warning and
+# still produce findings. $REPO (from test 4) has src/app.py, matching fixture.patch.
+mkconfig "$TMP/fake1.sh"
+out="$(cd "$REPO" && MULTI_REVIEW_CONFIG="$TMP/config.json" FULLFILE_TOTAL_CAP=abc \
+  bash "$ROOT/bin/multi-review" --diff "$TMP/fixture.patch" --no-reconcile --timeout 60 2>&1)"
+if ! grep -q 'integer expression expected' <<<"$out" \
+   && grep -q "ignoring non-integer FULLFILE_TOTAL_CAP='abc'" <<<"$out" \
+   && grep -q 'FINDINGS\[fake\]=' <<<"$out"; then
+  ok "non-integer cap env var coerced to default with a warning, no crash"
+else bad "non-integer cap env var coerced to default with a warning, no crash: $out"; fi
+
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

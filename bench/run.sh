@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Recall benchmark: builds a tiny fixture repo with planted bugs (bench/cases.json),
-# fans the change out to the REAL reviewer CLIs, and scores each reviewer's findings
-# against the expected cases. This is how you measure whether a prompt/criteria tweak
-# actually improved detection — instead of guessing.
+# Recall + precision benchmark: builds a tiny fixture repo whose change adds one file
+# with planted bugs (bench/cases.json) AND one clean control file, fans the change out
+# to the REAL reviewer CLIs, and scores each reviewer two ways. This is how you measure
+# whether a prompt/criteria tweak actually improved detection — instead of guessing.
 #
 # COSTS REAL QUOTA on every enabled reviewer — opt-in, NOT part of tests/run.sh.
 #
@@ -11,8 +11,11 @@
 #   bash bench/run.sh --reviewers agy,copilot  # subset
 #   bash bench/run.sh --timeout 1200           # slow models
 #
-# A finding scores a hit when: same file, line within ±3, and title+detail matches
-# the case's keyword pattern (so co-located cases can't cross-credit each other).
+# Recall — a finding scores a hit when: same file, line within ±3, and title+detail
+# matches the case's keyword pattern (so co-located cases can't cross-credit each other).
+# Precision — the change also adds a clean control file (app/clean.py) with no bugs; any
+# finding on it is a false positive. Measuring both in ONE fan-out (no extra quota) keeps
+# a trigger-happy reviewer — perfect recall by flagging everything — from looking good.
 set -euo pipefail
 
 # Windows jq emits CRLF; strip CR so values feeding shell vars/--argjson stay clean.
@@ -27,7 +30,8 @@ trap 'rm -rf "$TMPR"' EXIT
 # Base commit: sibling handlers that all apply an auth guard, a registry that
 # registers "db", a util module with helper(). The change commit adds app/stats.py
 # with six planted bugs (see bench/cases.json) under an intent that claims the
-# endpoint is read-only.
+# endpoint is read-only, PLUS app/clean.py — a correct, convention-following file
+# that should draw no findings (the precision control).
 REPO="$TMPR/repo"
 mkdir -p "$REPO/app"
 
@@ -95,6 +99,20 @@ def get_stats(session, bucket_count):
 def purge_old_records(db):
     db.delete_old()
 EOF
+
+# Clean control, added in the SAME change: it calls the auth guard like its siblings,
+# uses only symbols that exist, has no unused imports, and is read-only (matching the
+# intent). A well-behaved reviewer reports NOTHING here; every finding on it is a false
+# positive. Keep it genuinely clean — if you edit it, make sure it trips none of the
+# review goals, or precision scores go negative for the wrong reason.
+cat > "$REPO/app/clean.py" <<'EOF'
+from app import auth
+
+
+def get_status(session):
+    auth.check_session(session)
+    return {"status": "ok"}
+EOF
 git -C "$REPO" -c user.name=bench -c user.email=b@b add -A
 git -C "$REPO" -c user.name=bench -c user.email=b@b commit -qm "Add read-only stats endpoint"
 
@@ -150,6 +168,19 @@ done
 printf '%-22s' "recall"
 for n in "${NAMES[@]}"; do printf '%-10s' "${TOTAL[$n]:-0}/${#IDS[@]}"; done
 printf '%s\n' "$union_hits/${#IDS[@]}"
+
+# Precision control: count each reviewer's findings on the clean file. Lower is better;
+# 0 is ideal. Recall alone rewards flagging everything — this is the counterweight.
+# (No union column: false positives don't union meaningfully.)
+printf '%-22s' "false-pos(clean)"
+for n in "${NAMES[@]}"; do
+  fp="$(jqr -r '[.findings[]
+    | select((.file=="app/clean.py") or ((.file|tostring)|endswith("/app/clean.py")))
+    ] | length' "${FINDINGS[$n]}" 2>/dev/null || echo '?')"
+  printf '%-10s' "${fp:-0}"
+done
+printf '%s\n' "-"
 echo
-echo "union = caught by at least one reviewer (pipeline recall before reconcile;"
+echo "recall union = caught by at least one reviewer (pipeline recall before reconcile;"
 echo "the in-session Claude pass and reconcile can only add, not subtract)."
+echo "false-pos = findings on the clean control file (app/clean.py) — noise proxy; 0 is ideal."
