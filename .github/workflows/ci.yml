@@ -1,9 +1,9 @@
 name: ci
 
 # Runs the engine's syntax check and smoke tests on every PR and on pushes to main.
-# This is the automated gate that replaces the Gemini Code Assist bot (sunset
-# 2026-07-17). Needs only bash + jq + git — all present on ubuntu-latest — because
-# tests/run.sh drives a fake reviewer CLI and a fake gh (no real AI CLI or network).
+# This is the automated merge gate. Needs only bash + jq + git — all present on
+# ubuntu-latest — because tests/run.sh drives a fake reviewer CLI and a fake gh
+# (no real AI CLI or network).
 
 on:
   pull_request:

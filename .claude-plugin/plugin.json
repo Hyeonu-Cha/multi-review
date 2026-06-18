@@ -1,7 +1,7 @@
 {
   "name": "multi-review",
-  "version": "0.1.0",
-  "description": "Multi-CLI code review. Fans a PR diff out to several AI reviewers (agy, codex, gemini, copilot) in parallel, adds Claude's own pass, then reconciles into one de-duplicated, line-validated, severity-ranked review and optionally posts it inline to the PR.",
+  "version": "0.1.1",
+  "description": "Multi-CLI code review. Fans a PR diff out to several AI reviewers (agy, codex, copilot) in parallel, adds Claude's own pass, then reconciles into one de-duplicated, line-validated, severity-ranked review and optionally posts it inline to the PR.",
   "author": {
     "name": "Hyeonu Cha",
     "url": "https://github.com/Hyeonu-Cha"
@@ -15,7 +15,6 @@
     "ai",
     "multi-model",
     "reconcile",
-    "gemini",
     "codex",
     "copilot"
   ]
