@@ -17,11 +17,6 @@
       "cmd": "codex exec {INSTR} --dangerously-bypass-approvals-and-sandbox"
     },
     {
-      "name": "gemini",
-      "enabled": true,
-      "cmd": "gemini -p {INSTR} --yolo"
-    },
-    {
       "name": "copilot",
       "enabled": true,
       "cmd": "copilot -p {INSTR} --allow-all-tools --allow-all-paths"
@@ -33,7 +28,6 @@
     "cmd": "cat \"{PROMPT}\" | claude -p --dangerously-skip-permissions | tee \"{OUT}\""
   },
   "reconcilers": {
-    "gemini": "cat \"{PROMPT}\" | gemini -p --yolo | tee \"{OUT}\"",
     "codex": "cat \"{PROMPT}\" | codex exec --dangerously-bypass-approvals-and-sandbox | tee \"{OUT}\""
   }
 }
