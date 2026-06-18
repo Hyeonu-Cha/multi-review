@@ -1,7 +1,7 @@
 # multi-review
 
 Multi-CLI code review. Fan a PR diff out to several AI-CLI reviewers
-(Antigravity/`agy`, Codex, Copilot) running **headlessly in parallel**,
+(Antigravity/`agy`, Codex, Copilot, Cursor) running **headlessly in parallel**,
 then **reconcile** their findings into one de-duplicated, severity-ranked review.
 Claude reviews via the `/multi-review` skill (in-session, not headless).
 
@@ -36,9 +36,10 @@ and any macOS with a modern bash; `gh` is required only for reviewing/posting to
 ```
 /multi-review <PR#>  [or --base <ref> / --diff <file>]
    │  get diff  →  build criteria+schema file
-   ├─ bg job: agy --print '<instruction>'   ──▶ agy.json     ┐
-   ├─ bg job: codex exec '<instruction>'    ──▶ codex.json   ├─ JSON findings
-   ├─ bg job: copilot -p '<instruction>'    ──▶ copilot.json ┘
+   ├─ bg job: agy --print '<instruction>'      ──▶ agy.json     ┐
+   ├─ bg job: codex exec '<instruction>'       ──▶ codex.json   ├─ JSON findings
+   ├─ bg job: copilot -p '<instruction>'       ──▶ copilot.json │
+   ├─ bg job: cursor-agent -p '<instruction>'  ──▶ cursor.json  ┘
    ├─ [session Claude reviews (step 4)]
    └─ [session Claude reconciles (step 5)] → unified review → optional inline post
 ```
@@ -47,9 +48,10 @@ and any macOS with a modern bash; `gh` is required only for reviewing/posting to
 ```
 multi-review <PR#>  [or --base <ref> / --diff <file>]
    │  get diff  →  build criteria+schema file
-   ├─ bg job: agy --print '<instruction>'   ──▶ agy.json     ┐
-   ├─ bg job: codex exec '<instruction>'    ──▶ codex.json   ├─ JSON findings
-   ├─ bg job: copilot -p '<instruction>'    ──▶ copilot.json ┘
+   ├─ bg job: agy --print '<instruction>'      ──▶ agy.json     ┐
+   ├─ bg job: codex exec '<instruction>'       ──▶ codex.json   ├─ JSON findings
+   ├─ bg job: copilot -p '<instruction>'       ──▶ copilot.json │
+   ├─ bg job: cursor-agent -p '<instruction>'  ──▶ cursor.json  ┘
    └─ reconciler.cmd (e.g. claude -p) → review.json → optional inline post
 ```
 
@@ -111,7 +113,7 @@ you wouldn't be comfortable handing to an autonomous agent.
   and `cygpath`
 - **`jq`** — `winget install jqlang.jq`
 - **`gh`** — only for reviewing/posting to GitHub PRs
-- The reviewer CLIs you enable (`agy`, `codex`, `copilot`, …) on your `PATH`, **each 
+- The reviewer CLIs you enable (`agy`, `codex`, `copilot`, `cursor`, …) on your `PATH`, **each 
   logged in**. (Claude reviews via the `/multi-review` skill in-session, not as a headless CLI.)
 - **WezTerm** — *optional*, only if you want `--backend wezterm` to watch reviewers live
 
@@ -122,7 +124,7 @@ logins. Logins are per-machine **by design** (subscriptions / OAuth tokens don't
 shouldn't travel between PCs), so expect to install + sign in once per machine.
 
 1. Install **Git for Windows** and **`jq`** (see Requirements above).
-2. Install the reviewer CLIs you want (`agy`, `codex`, `copilot`, …) and **log into each**.
+2. Install the reviewer CLIs you want (`agy`, `codex`, `copilot`, `cursor`, …) and **log into each**.
    (Claude is used via the `/multi-review` skill in Claude Code, not installed separately.)
 3. Clone the repo:
    ```
@@ -157,7 +159,7 @@ bin/multi-review 42 --post --block            # let REQUEST_CHANGES actually blo
 bin/multi-review 42 --timeout 1200            # wait longer for reviewers to finish
 
 # Skill path (in Claude Code):
-/multi-review 42                    # reviews PR #42 with agy + codex + copilot + in-session claude
+/multi-review 42                    # reviews PR #42 with agy + codex + copilot + cursor + in-session claude
 ```
 
 Output is printed and saved to `out/<timestamp>/review.json` (a GitHub reviews-API
@@ -196,7 +198,7 @@ the default is used (so a typo can't silently disable a budget).
 **Reviewers:** Each has `name`, `enabled` toggle, and `cmd` (CLI's one-shot "print" mode). 
 `{INSTR}` is replaced with shared `instruction` (paths substituted, single-quoted).
 
-**Default enabled: `agy`, `codex`, `copilot`. Claude intentionally disabled 
+**Default enabled: `agy`, `codex`, `copilot`, `cursor`. Claude intentionally disabled 
 (reviews via `/multi-review` skill in-session).** Example:
 
 ```json
@@ -242,7 +244,7 @@ Two paths, zero `-p` in the skill:
 
 Toggle reviewers with `enabled`. **Tune each `cmd` per CLI** — the non-interactive flag
 and permission-bypass flag differ (`claude -p … --dangerously-skip-permissions`,
-`agy --print … --dangerously-skip-permissions`, `codex exec …`, `copilot -p … --allow-all-tools --allow-all-paths`).
+`agy --print … --dangerously-skip-permissions`, `codex exec …`, `copilot -p … --allow-all-tools --allow-all-paths`, `cursor-agent -p … --force`).
 
 ### Review criteria
 
