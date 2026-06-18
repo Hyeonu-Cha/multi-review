@@ -420,7 +420,7 @@ for name in "${NAMES[@]}"; do
 done
 [ "${#MISSING[@]}" -gt 0 ] && echo "› skipping reviewers not on PATH: ${MISSING[*]}" >&2
 NAMES=("${AVAIL[@]}")
-[ "${#NAMES[@]}" -gt 0 ] || die "no enabled reviewer CLI is installed on PATH — install at least one (agy, codex, copilot, …)"
+[ "${#NAMES[@]}" -gt 0 ] || die "no enabled reviewer CLI is installed on PATH — install at least one (agy, codex, copilot, cursor, …)"
 
 # instruction with file paths substituted (Windows paths for the Windows CLIs)
 instr_for() {
