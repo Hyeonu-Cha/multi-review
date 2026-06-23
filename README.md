@@ -1,5 +1,9 @@
 # multi-review
 
+[![CI](https://github.com/Hyeonu-Cha/multi-review/actions/workflows/ci.yml/badge.svg)](https://github.com/Hyeonu-Cha/multi-review/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FHyeonu-Cha%2Fmulti-review%2Fmain%2F.claude-plugin%2Fplugin.json&query=%24.version&label=version&color=blue)](.claude-plugin/plugin.json)
+
 Multi-CLI code review. Fan a PR diff out to several AI-CLI reviewers
 (Antigravity/`agy`, Codex, Copilot, Cursor) running **headlessly in parallel**,
 then **reconcile** their findings into one de-duplicated, severity-ranked review.
