@@ -43,7 +43,11 @@ This is a **real, independent review — do it before reconciling, not as a rubb
 **First, point your repo access at the code under review.** In branch and `--diff` mode the working tree already *is* what's being reviewed — read it directly with Read/Grep. **In PR-number mode it usually is NOT:** the engine reviews `refs/pull/<N>/head`, which your local checkout rarely matches, so reading working-tree files, running `git blame`, or resolving symbols against the working tree all hit the *wrong* content — and the diff's line numbers are PR-head new-file numbers that won't map onto your checkout. Fetch the PR head into a **stable named ref** and query it read-only — never check out or switch branches (that mutates the user's workspace and fails on a dirty tree):
 
 ```
-git fetch -q origin "refs/pull/<N>/head:refs/mr/<N>"   # PR head; delete refs/mr/<N> when done
+# origin may be a fork; the PR ref lives on the base repo, so resolve the repo via gh
+# (mirrors the engine). The leading `+` force-updates the ref, so a force-pushed PR head
+# can't leave a stale refs/mr/<N> from an earlier review of the same PR.
+URL=$(gh repo view --json url -q .url 2>/dev/null | tr -d '\r')
+git fetch -q "${URL:-origin}" "+refs/pull/<N>/head:refs/mr/<N>" || git fetch -q origin "+refs/pull/<N>/head:refs/mr/<N>"
 ```
 
 Then, throughout the cross-file checks below, substitute that ref (call it `$REF = refs/mr/<N>` in PR mode, empty/working-tree in branch & `--diff` mode):
@@ -52,6 +56,8 @@ Then, throughout the cross-file checks below, substitute that ref (call it `$REF
 - **Date a line:** `git blame -L <a>,<b> $REF -- <path>`.
 
 If the fetch fails (no access to the PR ref), fall back to the engine's attached file snapshots for reads and **skip the `git blame`-based pre-existing demotion, saying so in the review** — dating lines against the wrong tree is worse than not dating them. (Prefer `gh pr checkout <N>` only if you specifically want plain Read/Grep on a clean tree and the user is fine switching branches.)
+
+**Always** delete the ref when the review is done — whether the fetch succeeded or failed — so it can't go stale or block a later refetch: `git update-ref -d refs/mr/<N>`.
 - **Symbol resolution / broken references.** For each new type, function, member, or module a changed line references (e.g. a class that now implements a newly added interface), open the file that *defines* it and confirm the reference actually binds — right module/namespace imported, member exists, signature matches. A reference that fails at compile time — or at import/run time in interpreted languages — is at least `high`.
 - **Unused imports** introduced by the change — confirm against the whole file.
 - **Cross-file contract & consistency.** Open the base type / data model / sibling code paths a changed line interacts with: does a public type expose or require a field it shouldn't (contradicting its base or doc comment)? Is the error handling (status code, error value, exception type) consistent with how sibling code paths handle the same condition?
