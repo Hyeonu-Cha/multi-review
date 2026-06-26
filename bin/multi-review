@@ -465,13 +465,24 @@ done
 # ---- launch reviewers -------------------------------------------------------
 declare -A PANES=()
 declare -a NONE_PIDS=()
+NONE_SETSID=0
 TMUX_SESSION=""
 
 launch_none() {
   echo "› backend 'none' — running ${#NAMES[@]} reviewers as background jobs (logs: $RUN/<name>.log)"
   local i
+  # Run each reviewer in its own process group (setsid) so a timeout can kill the whole
+  # subtree — `kill $wrapper_pid` only signals the wrapper bash; the reviewer CLI (and any
+  # children it spawns) get reparented and keep running, burning API credits/CPU. Where
+  # setsid is absent (e.g. Git Bash on Windows) we fall back to a plain background job and
+  # can only signal the wrapper — no clean portable subtree kill exists there.
+  command -v setsid >/dev/null 2>&1 && NONE_SETSID=1
   for i in "${!NAMES[@]}"; do
-    bash "${SCRIPTS[$i]}" > "$RUN/${NAMES[$i]}.log" 2>&1 &
+    if [ "$NONE_SETSID" -eq 1 ]; then
+      setsid bash "${SCRIPTS[$i]}" > "$RUN/${NAMES[$i]}.log" 2>&1 &
+    else
+      bash "${SCRIPTS[$i]}" > "$RUN/${NAMES[$i]}.log" 2>&1 &
+    fi
     NONE_PIDS+=("$!")
   done
 }
@@ -527,7 +538,11 @@ echo " ($valid/${#NAMES[@]} produced valid JSON, $finished/${#NAMES[@]} finished
 
 # ---- clean up reviewers -----------------------------------------------------
 if [ "$BACKEND" = "none" ]; then
-  [ "$TIMED_OUT" -eq 1 ] && for p in "${NONE_PIDS[@]}"; do kill "$p" 2>/dev/null || true; done
+  [ "$TIMED_OUT" -eq 1 ] && for p in "${NONE_PIDS[@]}"; do
+    # setsid launch → $! is the process-group leader; kill the negative pid to take down
+    # the reviewer and its children. Otherwise we can only signal the lone wrapper pid.
+    if [ "$NONE_SETSID" -eq 1 ]; then kill -- -"$p" 2>/dev/null || true; else kill "$p" 2>/dev/null || true; fi
+  done
 elif [ "$BACKEND" = "wezterm" ]; then
   for name in "${NAMES[@]}"; do wez kill-pane --pane-id "${PANES[$name]}" >/dev/null 2>&1 || true; done
 elif [ "$BACKEND" = "tmux" ] && [ -n "$TMUX_SESSION" ]; then

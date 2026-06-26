@@ -243,6 +243,33 @@ if ! grep -q 'integer expression expected' <<<"$out" \
   ok "non-integer cap env var coerced to default with a warning, no crash"
 else bad "non-integer cap env var coerced to default with a warning, no crash: $out"; fi
 
+# ---- test 12: none-backend timeout kills the reviewer's whole subtree ------------
+# A hung reviewer's child used to be orphaned on timeout — the engine killed only the
+# wrapper bash, leaving the CLI (and its children) running and burning credits. setsid
+# now puts each reviewer in its own process group so the timeout kills the whole group.
+# Gated on setsid (absent on e.g. Git Bash, where no portable subtree kill exists).
+GC_PID="$TMP/orphan.pid"; rm -f "$GC_PID"
+cat > "$TMP/fake_hang.sh" <<EOF
+#!/usr/bin/env bash
+# spawn a grandchild that would outlive an orphaned wrapper, record it, then hang
+( exec sleep 30 ) &
+echo \$! > "$GC_PID"
+wait
+EOF
+mkconfig "$TMP/fake_hang.sh"
+out="$(cd "$ROOT" && MULTI_REVIEW_CONFIG="$TMP/config.json" \
+  bash bin/multi-review --diff "$TMP/fixture.patch" --no-reconcile --timeout 1 2>&1)"
+sleep 2  # let the kill propagate
+if ! command -v setsid >/dev/null 2>&1; then
+  ok "none-backend timeout subtree kill (skipped: no setsid)"
+elif grep -q timeout <<<"$out" && [ -f "$GC_PID" ] && gc="$(cat "$GC_PID")" \
+     && [ -n "$gc" ] && ! kill -0 "$gc" 2>/dev/null; then
+  ok "none-backend timeout kills the reviewer's whole subtree"
+else
+  [ -f "$GC_PID" ] && kill "$(cat "$GC_PID")" 2>/dev/null
+  bad "none-backend timeout kills the reviewer's whole subtree (orphan survived): $out"
+fi
+
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
