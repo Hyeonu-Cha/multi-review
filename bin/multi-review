@@ -465,14 +465,30 @@ done
 # ---- launch reviewers -------------------------------------------------------
 declare -A PANES=()
 declare -a NONE_PIDS=()
+NONE_PGKILL=0   # 1 = reviewers launched in their own process group → group-kill on timeout
 TMUX_SESSION=""
 
 launch_none() {
   echo "› backend 'none' — running ${#NAMES[@]} reviewers as background jobs (logs: $RUN/<name>.log)"
-  local i
+  local i p
+  # Run each reviewer in its own process group so a timeout can kill the whole subtree —
+  # `kill $wrapper_pid` only signals the wrapper bash; the reviewer CLI (and any children it
+  # spawns) get reparented and keep running, burning API credits/CPU. Enabling job control
+  # (set -m) in a throwaway subshell puts the job in its own group (pid == pgid) without
+  # leaking job notices into our output — uniform across Linux and macOS, and with no
+  # dependency on setsid (absent on macOS). On Windows/Git Bash process groups aren't
+  # reliable, so fall back to a plain job + wrapper-only kill — no regression, and no
+  # portable subtree kill exists there.
+  if [[ "$OSTYPE" != msys* && "$OSTYPE" != cygwin* && "$OSTYPE" != win* ]]; then NONE_PGKILL=1; fi
   for i in "${!NAMES[@]}"; do
-    bash "${SCRIPTS[$i]}" > "$RUN/${NAMES[$i]}.log" 2>&1 &
-    NONE_PIDS+=("$!")
+    if [ "$NONE_PGKILL" -eq 1 ]; then
+      p=$(set -m; bash "${SCRIPTS[$i]}" > "$RUN/${NAMES[$i]}.log" 2>&1 & echo $!) 2>/dev/null
+      if [[ "$p" =~ ^[0-9]+$ ]]; then NONE_PIDS+=("$p")
+      else bash "${SCRIPTS[$i]}" > "$RUN/${NAMES[$i]}.log" 2>&1 & NONE_PIDS+=("$!"); fi
+    else
+      bash "${SCRIPTS[$i]}" > "$RUN/${NAMES[$i]}.log" 2>&1 &
+      NONE_PIDS+=("$!")
+    fi
   done
 }
 
@@ -527,7 +543,13 @@ echo " ($valid/${#NAMES[@]} produced valid JSON, $finished/${#NAMES[@]} finished
 
 # ---- clean up reviewers -----------------------------------------------------
 if [ "$BACKEND" = "none" ]; then
-  [ "$TIMED_OUT" -eq 1 ] && for p in "${NONE_PIDS[@]}"; do kill "$p" 2>/dev/null || true; done
+  [ "$TIMED_OUT" -eq 1 ] && for p in "${NONE_PIDS[@]}"; do
+    # job-control launch → $p leads its own group; kill the negative pid to take down the
+    # reviewer and its children, falling back to a single-pid kill if the group kill fails
+    # (e.g. a plain wrapper pid). NONE_PGKILL=0 (Windows/Git Bash) → signal the wrapper only.
+    if [ "$NONE_PGKILL" -eq 1 ]; then kill -- -"$p" 2>/dev/null || kill "$p" 2>/dev/null || true
+    else kill "$p" 2>/dev/null || true; fi
+  done
 elif [ "$BACKEND" = "wezterm" ]; then
   for name in "${NAMES[@]}"; do wez kill-pane --pane-id "${PANES[$name]}" >/dev/null 2>&1 || true; done
 elif [ "$BACKEND" = "tmux" ] && [ -n "$TMUX_SESSION" ]; then
