@@ -1,6 +1,6 @@
 {
   "name": "multi-review",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Multi-CLI code review. Fans a PR diff out to several AI reviewers (agy, codex, copilot, cursor) in parallel, adds Claude's own pass, then reconciles into one de-duplicated, line-validated, severity-ranked review and optionally posts it inline to the PR.",
   "author": {
     "name": "Hyeonu Cha",
