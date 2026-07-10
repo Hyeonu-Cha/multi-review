@@ -530,13 +530,14 @@ esac
 # this trap they'd keep running (the same orphan the timeout kill fixes, but on interrupt).
 cleanup_reviewers() {
   if [ "$BACKEND" = "none" ]; then
-    for p in "${NONE_PIDS[@]:-}"; do
+    # NONE_PIDS is populated by launch_none before the trap is armed, so it's non-empty here.
+    for p in "${NONE_PIDS[@]}"; do
       [ -n "$p" ] || continue
       if [ "$NONE_PGKILL" -eq 1 ]; then kill -- -"$p" 2>/dev/null || kill "$p" 2>/dev/null || true
       else kill "$p" 2>/dev/null || true; fi
     done
   elif [ "$BACKEND" = "wezterm" ]; then
-    for name in "${NAMES[@]:-}"; do wez kill-pane --pane-id "${PANES[$name]:-}" >/dev/null 2>&1 || true; done
+    for name in "${NAMES[@]}"; do wez kill-pane --pane-id "${PANES[$name]:-}" >/dev/null 2>&1 || true; done
   elif [ "$BACKEND" = "tmux" ] && [ -n "$TMUX_SESSION" ]; then
     tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
   fi
