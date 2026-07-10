@@ -288,22 +288,23 @@ mkconfig "$TMP/fake_hang2.sh"
 ( cd "$ROOT" || exit; export MULTI_REVIEW_CONFIG="$TMP/config.json"
   exec bash bin/multi-review --diff "$TMP/fixture.patch" --no-reconcile --timeout 60 ) >/dev/null 2>&1 &
 engine_pid=$!
-for _ in $(seq 1 20); do [ -s "$GC_PID2" ] && break; sleep 0.5; done  # wait for reviewer to come up
-kill -TERM "$engine_pid" 2>/dev/null
-dead=0
-for _ in $(seq 1 10); do
-  gc2="$(cat "$GC_PID2" 2>/dev/null)"
-  { [ -n "$gc2" ] && ! kill -0 "$gc2" 2>/dev/null; } && { dead=1; break; }
-  sleep 0.5
-done
+gc2=""
+for _ in $(seq 1 60); do gc2="$(cat "$GC_PID2" 2>/dev/null)"; [ -n "$gc2" ] && break; sleep 0.5; done  # reviewer up (<=30s)
 if [ "$subtree_kill" -eq 0 ]; then
   ok "INT/TERM reviewer cleanup (skipped: no process-group support)"
-elif [ "$dead" -eq 1 ]; then
-  ok "INT/TERM group-kills reviewers (no orphan on interrupt)"
+elif [ -z "$gc2" ]; then
+  bad "INT/TERM cleanup: reviewer never started (setup issue, not the trap)"
 else
-  bad "INT/TERM group-kills reviewers (orphan survived on interrupt)"
+  kill -TERM "$engine_pid" 2>/dev/null
+  # bash defers a trapped signal until the running foreground command returns, and the wait
+  # loop sits in `sleep 5`, so cleanup can lag up to ~5s — poll well past that (grandchild
+  # sleeps 300, so a long poll can't false-pass).
+  dead=0
+  for _ in $(seq 1 32); do ! kill -0 "$gc2" 2>/dev/null && { dead=1; break; }; sleep 0.5; done
+  if [ "$dead" -eq 1 ]; then ok "INT/TERM group-kills reviewers (no orphan on interrupt)"
+  else bad "INT/TERM group-kills reviewers (orphan survived on interrupt)"; fi
 fi
-gc2="$(cat "$GC_PID2" 2>/dev/null)"; [ -n "$gc2" ] && kill "$gc2" 2>/dev/null; kill "$engine_pid" 2>/dev/null; true
+[ -n "$gc2" ] && kill "$gc2" 2>/dev/null; kill "$engine_pid" 2>/dev/null; true
 
 echo
 echo "$pass passed, $fail failed"
