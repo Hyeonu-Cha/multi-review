@@ -1,7 +1,7 @@
 # multi-review
 
 [![CI](https://github.com/Hyeonu-Cha/multi-review/actions/workflows/ci.yml/badge.svg)](https://github.com/Hyeonu-Cha/multi-review/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-18%20passing-brightgreen)](tests/run.sh)
+[![tests](https://img.shields.io/badge/tests-19%20passing-brightgreen)](tests/run.sh)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FHyeonu-Cha%2Fmulti-review%2Fmain%2F.claude-plugin%2Fplugin.json&query=%24.version&label=version&color=blue)](.claude-plugin/plugin.json)
 

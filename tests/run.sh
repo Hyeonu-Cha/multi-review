@@ -245,14 +245,15 @@ else bad "non-integer cap env var coerced to default with a warning, no crash: $
 
 # ---- test 12: none-backend timeout kills the reviewer's whole subtree ------------
 # A hung reviewer's child used to be orphaned on timeout — the engine killed only the
-# wrapper bash, leaving the CLI (and its children) running and burning credits. setsid
-# now puts each reviewer in its own process group so the timeout kills the whole group.
-# Gated on setsid (absent on e.g. Git Bash, where no portable subtree kill exists).
+# wrapper bash, leaving the CLI (and its children) running and burning credits. Job control
+# (set -m) now puts each reviewer in its own process group so the timeout kills the whole
+# group. Gated on non-Windows (Git Bash has no reliable portable subtree kill).
 GC_PID="$TMP/orphan.pid"; rm -f "$GC_PID"
 cat > "$TMP/fake_hang.sh" <<EOF
 #!/usr/bin/env bash
-# spawn a grandchild that would outlive an orphaned wrapper, record it, then hang
-( exec sleep 30 ) &
+# spawn a grandchild that would outlive an orphaned wrapper, record it, then hang. sleep is
+# long enough that it can't exit on its own within the test window (which would false-pass).
+( exec sleep 300 ) &
 echo \$! > "$GC_PID"
 wait
 EOF
@@ -271,6 +272,38 @@ else
   [ -f "$GC_PID" ] && kill "$(cat "$GC_PID")" 2>/dev/null
   bad "none-backend timeout kills the reviewer's whole subtree (orphan survived): $out"
 fi
+
+# ---- test 13: INT/TERM cleans up reviewers (Ctrl-C must not orphan them) ----------
+# Reviewers run in their own process groups (set -m), so the engine's trap must group-kill
+# them on interrupt — without it a Ctrl-C kills the engine but leaves the CLIs running. Same
+# capability gate as test 12; reuses $subtree_kill computed above.
+GC_PID2="$TMP/orphan2.pid"; rm -f "$GC_PID2"
+cat > "$TMP/fake_hang2.sh" <<EOF
+#!/usr/bin/env bash
+( exec sleep 300 ) &
+echo \$! > "$GC_PID2"
+wait
+EOF
+mkconfig "$TMP/fake_hang2.sh"
+( cd "$ROOT"; export MULTI_REVIEW_CONFIG="$TMP/config.json"
+  exec bash bin/multi-review --diff "$TMP/fixture.patch" --no-reconcile --timeout 60 ) >/dev/null 2>&1 &
+engine_pid=$!
+for _ in $(seq 1 20); do [ -s "$GC_PID2" ] && break; sleep 0.5; done  # wait for reviewer to come up
+kill -TERM "$engine_pid" 2>/dev/null
+dead=0
+for _ in $(seq 1 10); do
+  gc2="$(cat "$GC_PID2" 2>/dev/null)"
+  { [ -n "$gc2" ] && ! kill -0 "$gc2" 2>/dev/null; } && { dead=1; break; }
+  sleep 0.5
+done
+if [ "$subtree_kill" -eq 0 ]; then
+  ok "INT/TERM reviewer cleanup (skipped: no process-group support)"
+elif [ "$dead" -eq 1 ]; then
+  ok "INT/TERM group-kills reviewers (no orphan on interrupt)"
+else
+  bad "INT/TERM group-kills reviewers (orphan survived on interrupt)"
+fi
+gc2="$(cat "$GC_PID2" 2>/dev/null)"; [ -n "$gc2" ] && kill "$gc2" 2>/dev/null; kill "$engine_pid" 2>/dev/null; true
 
 echo
 echo "$pass passed, $fail failed"
