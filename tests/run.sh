@@ -285,7 +285,7 @@ echo \$! > "$GC_PID2"
 wait
 EOF
 mkconfig "$TMP/fake_hang2.sh"
-( cd "$ROOT"; export MULTI_REVIEW_CONFIG="$TMP/config.json"
+( cd "$ROOT" || exit; export MULTI_REVIEW_CONFIG="$TMP/config.json"
   exec bash bin/multi-review --diff "$TMP/fixture.patch" --no-reconcile --timeout 60 ) >/dev/null 2>&1 &
 engine_pid=$!
 for _ in $(seq 1 20); do [ -s "$GC_PID2" ] && break; sleep 0.5; done  # wait for reviewer to come up
