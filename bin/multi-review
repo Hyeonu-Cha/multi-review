@@ -482,7 +482,7 @@ launch_none() {
   if [[ "$OSTYPE" != msys* && "$OSTYPE" != cygwin* && "$OSTYPE" != win* ]]; then NONE_PGKILL=1; fi
   for i in "${!NAMES[@]}"; do
     if [ "$NONE_PGKILL" -eq 1 ]; then
-      p=$(set -m; bash "${SCRIPTS[$i]}" > "$RUN/${NAMES[$i]}.log" 2>&1 & echo $!) 2>/dev/null
+      p=$( { set -m; bash "${SCRIPTS[$i]}" > "$RUN/${NAMES[$i]}.log" 2>&1 & echo $!; } 2>/dev/null )
       if [[ "$p" =~ ^[0-9]+$ ]]; then NONE_PIDS+=("$p")
       else bash "${SCRIPTS[$i]}" > "$RUN/${NAMES[$i]}.log" 2>&1 & NONE_PIDS+=("$!"); fi
     else
@@ -518,6 +518,29 @@ launch_tmux() {
   echo "› tmux session '$TMUX_SESSION' — attach: tmux attach -t $TMUX_SESSION"
 }
 
+# Tear down any still-running reviewers. Shared by the timeout path below and the INT/TERM
+# trap: post-`set -m` the reviewers live in their own process groups, outside the tty's
+# foreground group, so a user's Ctrl-C reaches the engine but NOT the reviewer CLIs — without
+# this trap they'd keep running (the same orphan the timeout kill fixes, but on interrupt).
+# Defined and trapped BEFORE launching so a signal DURING launch is caught too; NONE_PIDS then
+# holds only the reviewers started so far (an empty set if we're interrupted before the first).
+cleanup_reviewers() {
+  local p name
+  if [ "$BACKEND" = "none" ]; then
+    [ "${#NONE_PIDS[@]}" -gt 0 ] || return 0
+    for p in "${NONE_PIDS[@]}"; do
+      if [ "$NONE_PGKILL" -eq 1 ]; then kill -- -"$p" 2>/dev/null || kill "$p" 2>/dev/null || true
+      else kill "$p" 2>/dev/null || true; fi
+    done
+  elif [ "$BACKEND" = "wezterm" ]; then
+    for name in "${NAMES[@]}"; do wez kill-pane --pane-id "${PANES[$name]:-}" >/dev/null 2>&1 || true; done
+  elif [ "$BACKEND" = "tmux" ] && [ -n "$TMUX_SESSION" ]; then
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+  fi
+}
+trap 'cleanup_reviewers; exit 130' INT
+trap 'cleanup_reviewers; exit 143' TERM
+
 case "$BACKEND" in
   none)    launch_none;;
   wezterm) launch_wezterm;;
@@ -542,19 +565,9 @@ done
 echo " ($valid/${#NAMES[@]} produced valid JSON, $finished/${#NAMES[@]} finished)"
 
 # ---- clean up reviewers -----------------------------------------------------
-if [ "$BACKEND" = "none" ]; then
-  [ "$TIMED_OUT" -eq 1 ] && for p in "${NONE_PIDS[@]}"; do
-    # job-control launch → $p leads its own group; kill the negative pid to take down the
-    # reviewer and its children, falling back to a single-pid kill if the group kill fails
-    # (e.g. a plain wrapper pid). NONE_PGKILL=0 (Windows/Git Bash) → signal the wrapper only.
-    if [ "$NONE_PGKILL" -eq 1 ]; then kill -- -"$p" 2>/dev/null || kill "$p" 2>/dev/null || true
-    else kill "$p" 2>/dev/null || true; fi
-  done
-elif [ "$BACKEND" = "wezterm" ]; then
-  for name in "${NAMES[@]}"; do wez kill-pane --pane-id "${PANES[$name]}" >/dev/null 2>&1 || true; done
-elif [ "$BACKEND" = "tmux" ] && [ -n "$TMUX_SESSION" ]; then
-  tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
-fi
+# none: kill stragglers only after a timeout (a clean run already exited them); wezterm/tmux:
+# always tear down the panes/session. cleanup_reviewers dispatches per backend.
+if [ "$BACKEND" != "none" ] || [ "$TIMED_OUT" -eq 1 ]; then cleanup_reviewers; fi
 
 # ---- salvage + sanitize reviewer output --------------------------------------
 for name in "${NAMES[@]}"; do
