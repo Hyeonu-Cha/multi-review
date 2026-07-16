@@ -209,6 +209,12 @@ fi
 { echo; echo "## Diff to review"; echo; } >> "$PROMPT"
 cat "$DIFF" >> "$PROMPT"
 
+# The changed-file snapshots + related files are built ONCE into $CONTEXT_MD, then appended
+# to BOTH the reviewers' prompt and the reconciler's input. The reconciler judges each
+# finding's claim against the code, so it must see at least as much as the reviewers did —
+# with less context it would drop findings it simply couldn't check (a recall loss).
+CONTEXT_MD="$RUN/_context.md"; : > "$CONTEXT_MD"
+
 # ---- append full content of each changed file -------------------------------
 # Reviewers run isolated in $RUN with no repo access, so a 3-line diff hunk hides
 # unused imports, missing namespace imports, and intra-file contradictions. Snapshot
@@ -259,7 +265,7 @@ if [ "${#CHANGED[@]}" -gt 0 ]; then
   { echo; echo "## Full content of changed files (post-change)"; echo; echo \
     "Each changed file in full below, so you can catch issues the diff hunk hides"; echo \
     "(unused/missing imports, intra-file contradictions, whole-file context). Still"; echo \
-    "report only on lines that appear in the diff above."; } >> "$PROMPT"
+    "report only on lines that appear in the diff above."; } >> "$CONTEXT_MD"
   appended=0; omitted=0; total_lines=0
   SNAPF="$RUN/.snapshot"
   for f in "${CHANGED[@]}"; do
@@ -273,20 +279,20 @@ if [ "${#CHANGED[@]}" -gt 0 ]; then
     if [ "$TOTAL_CAP" -gt 0 ] && [ $((total_lines + eff)) -gt "$TOTAL_CAP" ]; then
       omitted=$((omitted+1)); continue
     fi
-    { echo; echo "### $f"; echo "$FENCE"; } >> "$PROMPT"
+    { echo; echo "### $f"; echo "$FENCE"; } >> "$CONTEXT_MD"
     if [ "$n" -gt "$FILE_CAP" ]; then
-      head -n "$FILE_CAP" "$SNAPF" >> "$PROMPT"
-      { echo "... [truncated: $n lines total, showing first $FILE_CAP]"; } >> "$PROMPT"
+      head -n "$FILE_CAP" "$SNAPF" >> "$CONTEXT_MD"
+      { echo "... [truncated: $n lines total, showing first $FILE_CAP]"; } >> "$CONTEXT_MD"
     else
-      cat "$SNAPF" >> "$PROMPT"
+      cat "$SNAPF" >> "$CONTEXT_MD"
     fi
-    echo "$FENCE" >> "$PROMPT"
+    echo "$FENCE" >> "$CONTEXT_MD"
     total_lines=$((total_lines + eff))
     appended=$((appended+1))
   done
   rm -f "$SNAPF"
   if [ "$omitted" -gt 0 ]; then
-    { echo; echo "_${omitted} changed file(s) omitted here by the total context budget — for those, review from their diff hunks above._"; } >> "$PROMPT"
+    { echo; echo "_${omitted} changed file(s) omitted here by the total context budget — for those, review from their diff hunks above._"; } >> "$CONTEXT_MD"
   fi
   echo "› full-file context: attached $appended/${#CHANGED[@]} changed files, $total_lines lines (from ${SNAP_REF:-working tree}; $omitted omitted by total cap)" >&2
 fi
@@ -374,12 +380,12 @@ if [ "${#ALLFILES[@]}" -gt 0 ]; then
           "guard/validation conventions a changed handler should match — goal 14) and"; echo \
           "files the changed files import (the symbols/base types they reference)."; echo \
           "CONTEXT ONLY — never report findings on these files; every finding must"; echo \
-          "still point at a line that appears in the diff above."; } >> "$PROMPT"
+          "still point at a line that appears in the diff above."; } >> "$CONTEXT_MD"
         hdr=1
       fi
-      { echo; echo "### $c"; echo "$FENCE"; } >> "$PROMPT"
-      cat "$RELDIR/$idx" >> "$PROMPT"
-      echo "$FENCE" >> "$PROMPT"
+      { echo; echo "### $c"; echo "$FENCE"; } >> "$CONTEXT_MD"
+      cat "$RELDIR/$idx" >> "$CONTEXT_MD"
+      echo "$FENCE" >> "$CONTEXT_MD"
       budget=$((budget - n)); attached=$((attached+1))
       [ "$budget" -le 0 ] && break
     done < <(sort -n "$META")
@@ -387,6 +393,9 @@ if [ "${#ALLFILES[@]}" -gt 0 ]; then
     echo "› related context: attached $attached/$total candidate files (budget $RELATED_CAP lines)" >&2
   fi
 fi
+
+# Hand the assembled code context to the reviewers (the reconciler gets the same block later).
+if [ -s "$CONTEXT_MD" ]; then cat "$CONTEXT_MD" >> "$PROMPT"; fi
 
 # ---- resolve reviewer set ---------------------------------------------------
 if [ -n "$REVIEWERS_OVERRIDE" ]; then
@@ -609,6 +618,17 @@ done
 
 # Append the diff so the reconciler can validate each finding's file/line/side against it.
 { echo; echo "## Diff (validate every finding's line against this)"; echo; cat "$DIFF"; } >> "$RECON_IN"
+
+# Append the same code context the reviewers saw, so the reconciler can judge each finding's
+# CLAIM against the real post-change source — not just its line number against the diff.
+# Without this it can only confirm that a line exists, never whether the asserted defect is
+# real, which is exactly what lets plausible-but-false findings survive on agreement alone.
+if [ -s "$CONTEXT_MD" ]; then
+  { echo; echo "## Code under review (verify every claim against this)"; echo; echo \
+    "The post-change content of the changed files, plus related unchanged files — exactly"; echo \
+    "what the reviewers saw. Open the cited code here and confirm or refute each claim."; } >> "$RECON_IN"
+  cat "$CONTEXT_MD" >> "$RECON_IN"
+fi
 
 # ---- reconcile (headless) ---------------------------------------------------
 # The selected reconciler's command: the default lives in .reconciler.cmd; any other

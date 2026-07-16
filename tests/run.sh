@@ -306,6 +306,27 @@ else
 fi
 [ -n "$gc2" ] && kill "$gc2" 2>/dev/null; kill "$engine_pid" 2>/dev/null; true
 
+# ---- test 14: reconcile input carries the code context ---------------------------
+# The reconciler judges each finding's CLAIM against the source, so its input must carry the
+# same changed-file snapshots the reviewers got. With only the diff it can confirm a line
+# exists but never whether the asserted defect is real — which is what lets plausible-but-
+# false findings survive on agreement alone.
+RECON_COPY="$TMP/recon_in.md"; rm -f "$RECON_COPY"
+cat > "$TMP/fakerec.sh" <<EOF
+#!/usr/bin/env bash
+cp "\$1" "$RECON_COPY"
+printf '%s' '{"body":"ok","event":"COMMENT","comments":[]}' > "\$2"
+EOF
+mkconfig "$TMP/fake1.sh" "bash $TMP/fakerec.sh {PROMPT} {OUT}"
+out="$(cd "$REPO" && MULTI_REVIEW_CONFIG="$TMP/config.json" \
+  bash "$ROOT/bin/multi-review" --diff "$TMP/fixture.patch" --timeout 60 2>&1)"
+if [ -f "$RECON_COPY" ] \
+   && grep -q 'Code under review' "$RECON_COPY" \
+   && grep -q 'Full content of changed files' "$RECON_COPY" \
+   && grep -q 'src/app.py' "$RECON_COPY"; then
+  ok "reconcile input carries changed-file context for claim verification"
+else bad "reconcile input carries changed-file context: $out"; fi
+
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
