@@ -3,6 +3,8 @@
 # with planted bugs (bench/cases.json) AND one clean control file, fans the change out
 # to the REAL reviewer CLIs, and scores each reviewer two ways. This is how you measure
 # whether a prompt/criteria tweak actually improved detection — instead of guessing.
+# With --judge it also runs the reconciler and scores what survived its refute-first pass, so
+# you can see whether the judge raises precision without costing recall.
 #
 # COSTS REAL QUOTA on every enabled reviewer — opt-in, NOT part of tests/run.sh.
 #
@@ -10,6 +12,7 @@
 #   bash bench/run.sh                          # all enabled reviewers, default timeout
 #   bash bench/run.sh --reviewers agy,copilot  # subset
 #   bash bench/run.sh --timeout 1200           # slow models
+#   bash bench/run.sh --judge                  # also reconcile, and score the judge's output
 #
 # Recall — a finding scores a hit when: same file, line within ±3, and title+detail
 # matches the case's keyword pattern (so co-located cases can't cross-credit each other).
@@ -25,6 +28,17 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CASES="$ROOT/bench/cases.json"
 TMPR="$(mktemp -d)"
 trap 'rm -rf "$TMPR"' EXIT
+
+# ---- flags --------------------------------------------------------------------
+# --judge runs the FULL pipeline (fan-out + reconcile) instead of fan-out only, and scores the
+# reconciler's output beside the raw reviewers' — from ONE fan-out, so the before/after costs
+# no extra reviewer quota (it does spend one reconciler call). Everything else passes through.
+JUDGE=0
+ARGS=()
+for a in "$@"; do
+  if [ "$a" = "--judge" ]; then JUDGE=1; else ARGS+=("$a"); fi
+done
+if [ "${#ARGS[@]}" -gt 0 ]; then set -- "${ARGS[@]}"; else set --; fi
 
 # ---- build the fixture repo ---------------------------------------------------
 # Base commit: sibling handlers that all apply an auth guard, a registry that
@@ -105,29 +119,73 @@ EOF
 # intent). A well-behaved reviewer reports NOTHING here; every finding on it is a false
 # positive. Keep it genuinely clean — if you edit it, make sure it trips none of the
 # review goals, or precision scores go negative for the wrong reason.
+#
+# It is deliberately ADVERSARIAL though: every function is correct but looks defective to a
+# reviewer that reads one line instead of the file. `sum/len` is a div-by-zero ONLY if you
+# miss the `if not samples` guard right above it; `json` looks unused unless you read as far
+# as render(); average_latency looks undefined at its call site unless you scroll up. These
+# are the plausible-but-false candidates the judge must refute — without them a reviewer
+# emits no false positives here and the precision column has no signal to measure.
+# NOTE: no explanatory comments in the fixture itself — a hint would defuse the trap.
 cat > "$REPO/app/clean.py" <<'EOF'
+import json
+
 from app import auth
 
 
 def get_status(session):
     auth.check_session(session)
     return {"status": "ok"}
+
+
+def average_latency(session, samples):
+    auth.check_session(session)
+    if not samples:
+        return 0.0
+    return sum(samples) / len(samples)
+
+
+def render(session, samples):
+    auth.check_session(session)
+    return json.dumps({"avg": average_latency(session, samples)})
 EOF
 git -C "$REPO" -c user.name=bench -c user.email=b@b add -A
 git -C "$REPO" -c user.name=bench -c user.email=b@b commit -qm "Add read-only stats endpoint"
 
 # ---- fan out to the real reviewers ---------------------------------------------
 echo "› benchmark repo: $REPO (base $BASE_SHA)"
-out="$(cd "$REPO" && bash "$ROOT/bin/multi-review" --base "$BASE_SHA" --no-reconcile "$@" 2>&1)" || true
+if [ "$JUDGE" -eq 1 ]; then
+  out="$(cd "$REPO" && bash "$ROOT/bin/multi-review" --base "$BASE_SHA" "$@" 2>&1)" || true
+else
+  out="$(cd "$REPO" && bash "$ROOT/bin/multi-review" --base "$BASE_SHA" --no-reconcile "$@" 2>&1)" || true
+fi
 echo "$out"
 echo
 
-# ---- score each reviewer against the cases --------------------------------------
+# ---- collect each reviewer's raw findings ---------------------------------------
+# Fan-out mode prints FINDINGS[name]=path. Judge mode reconciles instead, so pick the reviewer
+# JSONs out of the workspace the final payload landed in — one fan-out yields both the raw and
+# the judged numbers, which is the whole point of the comparison.
 declare -A FINDINGS
-while IFS= read -r line; do
-  name="${line#FINDINGS[}"; name="${name%%]=*}"
-  FINDINGS["$name"]="${line#*=}"
-done < <(grep -o 'FINDINGS\[[^]]*\]=.*' <<<"$out" | tr -d '\r')
+FINAL_JSON=""
+if [ "$JUDGE" -eq 1 ]; then
+  FINAL_JSON="$(grep -o 'saved: .*' <<<"$out" | tail -1 | sed 's/^saved: //' | tr -d '\r')"
+  [ -n "$FINAL_JSON" ] && [ -f "$FINAL_JSON" ] \
+    || { echo "reconciler produced no payload — nothing to score" >&2; exit 1; }
+  RUNDIR="$(dirname "$FINAL_JSON")"
+  for f in "$RUNDIR"/*.json; do
+    [ -f "$f" ] || continue
+    [ "$f" = "$FINAL_JSON" ] && continue   # the reconciled payload itself, not a reviewer
+    b="$(basename "$f" .json)"
+    case "$b" in _*) continue;; esac       # skip _post_payload.json etc.
+    FINDINGS["$b"]="$f"
+  done
+else
+  while IFS= read -r line; do
+    name="${line#FINDINGS[}"; name="${name%%]=*}"
+    FINDINGS["$name"]="${line#*=}"
+  done < <(grep -o 'FINDINGS\[[^]]*\]=.*' <<<"$out" | tr -d '\r')
+fi
 
 if [ "${#FINDINGS[@]}" -eq 0 ]; then
   echo "no reviewer produced findings — nothing to score" >&2
@@ -139,10 +197,12 @@ mapfile -t NAMES < <(printf '%s\n' "${!FINDINGS[@]}" | sort)
 
 printf '%-22s' "case"
 for n in "${NAMES[@]}"; do printf '%-10s' "$n"; done
-printf '%s\n' "union"
+printf '%-10s' "union"
+if [ "$JUDGE" -eq 1 ]; then printf '%-10s' "JUDGE"; fi
+echo
 
 declare -A TOTAL
-union_hits=0
+union_hits=0; judge_hits=0
 for id in "${IDS[@]}"; do
   file="$(jqr -r --arg id "$id" '.[] | select(.id==$id) | .file' "$CASES")"
   cl="$(jqr -r --arg id "$id" '.[] | select(.id==$id) | .line' "$CASES")"
@@ -162,12 +222,26 @@ for id in "${IDS[@]}"; do
       printf '%-10s' "-"
     fi
   done
-  if [ "$union" -eq 1 ]; then printf '%s\n' "HIT"; union_hits=$((union_hits+1)); else printf '%s\n' "-"; fi
+  if [ "$union" -eq 1 ]; then printf '%-10s' "HIT"; union_hits=$((union_hits+1)); else printf '%-10s' "-"; fi
+  # The judged payload is a reviews-API payload, so its shape differs from a reviewer's:
+  # comments[].path/.line/.body rather than findings[].file/.line/.title+.detail.
+  if [ "$JUDGE" -eq 1 ]; then
+    jhit="$(jqr -r --arg f "$file" --argjson l "$cl" --arg p "$pat" '
+      [.comments[]
+        | select((.path == $f) or ((.path|tostring) | endswith($f)))
+        | select(((.line - $l) | if . < 0 then -. else . end) <= 3)
+        | select(((.body // "") | test($p; "i")))
+      ] | length' "$FINAL_JSON" 2>/dev/null || echo 0)"
+    if [ "${jhit:-0}" -gt 0 ]; then printf '%-10s' "HIT"; judge_hits=$((judge_hits+1)); else printf '%-10s' "-"; fi
+  fi
+  echo
 done
 
 printf '%-22s' "recall"
 for n in "${NAMES[@]}"; do printf '%-10s' "${TOTAL[$n]:-0}/${#IDS[@]}"; done
-printf '%s\n' "$union_hits/${#IDS[@]}"
+printf '%-10s' "$union_hits/${#IDS[@]}"
+if [ "$JUDGE" -eq 1 ]; then printf '%-10s' "$judge_hits/${#IDS[@]}"; fi
+echo
 
 # Precision control: count each reviewer's findings on the clean file. Lower is better;
 # 0 is ideal. Recall alone rewards flagging everything — this is the counterweight.
@@ -179,8 +253,22 @@ for n in "${NAMES[@]}"; do
     ] | length' "${FINDINGS[$n]}" 2>/dev/null || echo '?')"
   printf '%-10s' "${fp:-0}"
 done
-printf '%s\n' "-"
+printf '%-10s' "-"
+if [ "$JUDGE" -eq 1 ]; then
+  jfp="$(jqr -r '[.comments[]
+    | select((.path=="app/clean.py") or ((.path|tostring)|endswith("/app/clean.py")))
+    ] | length' "$FINAL_JSON" 2>/dev/null || echo '?')"
+  printf '%-10s' "${jfp:-0}"
+fi
 echo
-echo "recall union = caught by at least one reviewer (pipeline recall before reconcile;"
-echo "the in-session Claude pass and reconcile can only add, not subtract)."
+echo
+echo "recall union = caught by at least one reviewer (raw pipeline recall, before the judge)."
 echo "false-pos = findings on the clean control file (app/clean.py) — noise proxy; 0 is ideal."
+if [ "$JUDGE" -eq 1 ]; then
+  echo
+  echo "JUDGE = what survived the reconciler's refute-first verification, scored the same way."
+  echo "Read it against 'union' (recall) and the per-reviewer false-pos (precision):"
+  echo "  judge false-pos < raw false-pos, judge recall == union  → the judge is working."
+  echo "  judge recall  <  union                                  → it is over-refuting real bugs."
+  echo "  judge false-pos == raw false-pos                        → it is rubber-stamping."
+fi
