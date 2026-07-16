@@ -518,21 +518,17 @@ launch_tmux() {
   echo "› tmux session '$TMUX_SESSION' — attach: tmux attach -t $TMUX_SESSION"
 }
 
-case "$BACKEND" in
-  none)    launch_none;;
-  wezterm) launch_wezterm;;
-  tmux)    launch_tmux;;
-esac
-
 # Tear down any still-running reviewers. Shared by the timeout path below and the INT/TERM
 # trap: post-`set -m` the reviewers live in their own process groups, outside the tty's
 # foreground group, so a user's Ctrl-C reaches the engine but NOT the reviewer CLIs — without
 # this trap they'd keep running (the same orphan the timeout kill fixes, but on interrupt).
+# Defined and trapped BEFORE launching so a signal DURING launch is caught too; NONE_PIDS then
+# holds only the reviewers started so far (an empty set if we're interrupted before the first).
 cleanup_reviewers() {
+  local p name
   if [ "$BACKEND" = "none" ]; then
-    # NONE_PIDS is populated by launch_none before the trap is armed, so it's non-empty here.
+    [ "${#NONE_PIDS[@]}" -gt 0 ] || return 0
     for p in "${NONE_PIDS[@]}"; do
-      [ -n "$p" ] || continue
       if [ "$NONE_PGKILL" -eq 1 ]; then kill -- -"$p" 2>/dev/null || kill "$p" 2>/dev/null || true
       else kill "$p" 2>/dev/null || true; fi
     done
@@ -544,6 +540,12 @@ cleanup_reviewers() {
 }
 trap 'cleanup_reviewers; exit 130' INT
 trap 'cleanup_reviewers; exit 143' TERM
+
+case "$BACKEND" in
+  none)    launch_none;;
+  wezterm) launch_wezterm;;
+  tmux)    launch_tmux;;
+esac
 
 # ---- wait for each reviewer to write valid JSON -----------------------------
 echo -n "› waiting for reviewers"

@@ -47,7 +47,7 @@ This is a **real, independent review — do it before reconciling, not as a rubb
 # blind `git fetch origin refs/pull/<N>/head` can bind a DIFFERENT repo's PR #<N>. The `+`
 # force-updates the ref so a force-pushed head can't leave a stale refs/mr/<N>.
 URL=$(gh repo view --json url -q .url 2>/dev/null | tr -d '\r')
-git fetch -q "${URL:-origin}" "+refs/pull/<N>/head:refs/mr/<N>"
+git fetch -q "${URL:-origin}" "+refs/pull/<N>/head:refs/mr/<N>" || true   # a failed fetch is handled by the check below
 # Verify the fetched head IS this PR's head. If gh resolved the wrong repo, the fetch failed,
 # or a same-numbered fork PR got bound, the SHAs won't match — treat that as "no PR ref".
 WANT=$(gh pr view <N> --json headRefOid -q .headRefOid 2>/dev/null | tr -d '\r')
