@@ -311,6 +311,8 @@ fi
 #   Tier 1 — same-folder siblings sharing a changed file's extension (≤3 per folder)
 #   Tier 2 — files whose name matches the last segment of an import-like statement
 #            (import/from/using/use/require/#include) in a changed file
+#   Tier 3 — files named after a type a changed .cs/.java/.kt file references (those
+#            languages import namespaces, not files, so Tier 2 can't resolve them)
 # Budget: RELATED_TOTAL_CAP total lines (default 10000; 0 disables). Smallest files
 # first so the budget buys the most coverage; files over FULLFILE_LINE_CAP are
 # skipped outright (truncated context is poor context). These files are context
@@ -362,6 +364,29 @@ if [ "${#ALLFILES[@]}" -gt 0 ]; then
       [ -n "${REL_SEEN[$c]:-}" ] && continue
       REL_SEEN["$c"]=1; CAND+=("$c")
     done < <(printf '%s\n' "${ALLFILES[@]}" | grep -E "(^|/)($ALT)\.[A-Za-z0-9]+$" | head -n 20)
+  fi
+  # Tier 3: type references, for languages whose imports name a NAMESPACE rather than a file
+  # (C#/Java/Kotlin). `using MyApp.Services;` says nothing about which file to open — Tier 2
+  # reduces it to `Services` and matches no filename, so a changed .cs file got NO forward
+  # context at all. Those languages instead put one public type per file, named after the
+  # type, so resolve the type identifiers the changed files REFERENCE against same-named repo
+  # files. Framework types filter themselves out: there is no List.cs/Task.cs in the repo.
+  # Gated on those extensions so JS/Python repos keep Tier 2's behaviour (and budget) intact,
+  # and restricted to source extensions so a type name can't drag in a same-named asset.
+  NSFILES=()
+  for f in "${CHANGED[@]}"; do
+    case "$f" in *.cs|*.java|*.kt) NSFILES+=("$f");; esac
+  done
+  if [ "${#NSFILES[@]}" -gt 0 ]; then
+    TYPES="$(for f in "${NSFILES[@]}"; do snapshot "$f" 2>/dev/null || true; done \
+      | grep -oE '\b[A-Z][A-Za-z0-9_]{2,}\b' | sort -u | head -n 200 || true)"
+    if [ -n "$TYPES" ]; then
+      TALT="$(paste -sd'|' <<<"$TYPES")"
+      while IFS= read -r c; do
+        [ -n "${REL_SEEN[$c]:-}" ] && continue
+        REL_SEEN["$c"]=1; CAND+=("$c")
+      done < <(printf '%s\n' "${ALLFILES[@]}" | grep -E "(^|/)($TALT)\.(cs|java|kt)$" | head -n 20)
+    fi
   fi
   if [ "${#CAND[@]}" -gt 0 ]; then
     RELDIR="$RUN/.related"; mkdir -p "$RELDIR"

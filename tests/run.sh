@@ -342,6 +342,51 @@ if [ -n "$ws" ] && [ -f "$ws/prompt.md" ] \
   ok "FULLFILE_LINE_CAP=0 disables the per-file limit instead of emptying context"
 else bad "FULLFILE_LINE_CAP=0 disables the per-file limit: $out"; fi
 
+# ---- test 16: C# type references resolve to related context ----------------------
+# C# `using` names a NAMESPACE, not a file, so Tier 2 reduced `using MyApp.Services;` to
+# `Services` and matched no filename — a changed .cs file got zero forward context. Tier 3
+# resolves referenced type identifiers to same-named files instead. Framework types must
+# NOT drag anything in (there is no Task.cs), and the same-folder sibling still applies.
+# FooService lives in a DIFFERENT folder, so Tier 1 (same-folder siblings) cannot reach it —
+# Tier 3 is the only path, which is what makes this test fail on the pre-fix engine.
+CSREPO="$TMP/csrepo"
+mkdir -p "$CSREPO/src/Api" "$CSREPO/src/Services"
+cat > "$CSREPO/src/Services/FooService.cs" <<'EOF'
+namespace MyApp.Services;
+public class FooService {
+    public string Get(string id) => id;
+}
+EOF
+cat > "$CSREPO/src/Api/FooController.cs" <<'EOF'
+using System.Threading.Tasks;
+using MyApp.Services;
+namespace MyApp.Api;
+public class FooController {
+    public string Handle(string id) => new FooService().Get(id);
+}
+EOF
+git -C "$CSREPO" init -q
+git -C "$CSREPO" -c user.name=t -c user.email=t@t add -A
+git -C "$CSREPO" -c user.name=t -c user.email=t@t commit -qm init
+cat > "$TMP/cs.patch" <<'EOF'
+diff --git a/src/Api/FooController.cs b/src/Api/FooController.cs
+index 1111111..2222222 100644
+--- a/src/Api/FooController.cs
++++ b/src/Api/FooController.cs
+@@ -3,4 +3,5 @@ namespace MyApp.Api;
+ public class FooController {
+     public string Handle(string id) => new FooService().Get(id);
++    public string Extra(string id) => new FooService().Get(id);
+ }
+EOF
+mkconfig "$TMP/fake1.sh"
+out="$(cd "$CSREPO" && MULTI_REVIEW_CONFIG="$TMP/config.json" \
+  bash "$ROOT/bin/multi-review" --diff "$TMP/cs.patch" --no-reconcile --timeout 60 2>&1)"
+ws="$(grep -o 'WORKSPACE=.*' <<<"$out" | cut -d= -f2 | tr -d '\r')"
+if [ -n "$ws" ] && [ -f "$ws/prompt.md" ] && grep -q 'FooService.cs' "$ws/prompt.md"; then
+  ok "C# type reference resolves to related context (Tier 3)"
+else bad "C# type reference resolves to related context: $out"; fi
+
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
