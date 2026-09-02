@@ -565,7 +565,7 @@ launch_tmux() {
 # Defined and trapped BEFORE launching so a signal DURING launch is caught too; NONE_PIDS then
 # holds only the reviewers started so far (an empty set if we're interrupted before the first).
 cleanup_reviewers() {
-  local p name win
+  local p name dpid dwin
   if [ "$BACKEND" = "none" ]; then
     [ "${#NONE_PIDS[@]}" -gt 0 ] || return 0
     for p in "${NONE_PIDS[@]}"; do
