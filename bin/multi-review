@@ -565,12 +565,37 @@ launch_tmux() {
 # Defined and trapped BEFORE launching so a signal DURING launch is caught too; NONE_PIDS then
 # holds only the reviewers started so far (an empty set if we're interrupted before the first).
 cleanup_reviewers() {
-  local p name
+  local p name win
   if [ "$BACKEND" = "none" ]; then
     [ "${#NONE_PIDS[@]}" -gt 0 ] || return 0
     for p in "${NONE_PIDS[@]}"; do
       if [ "$NONE_PGKILL" -eq 1 ]; then kill -- -"$p" 2>/dev/null || kill "$p" 2>/dev/null || true
-      else kill "$p" 2>/dev/null || true; fi
+      else
+        # Windows/Git Bash: process groups aren't reliable, and `kill` reaps only the MSYS
+        # wrapper — the reviewer CLI keeps running on your API quota. `taskkill /T` alone
+        # doesn't fix it either: MSYS emulates fork(), so a grandchild's WINDOWS parent link
+        # doesn't follow the shell hierarchy and /T from the wrapper terminates just the
+        # wrapper (verified — it reports one PID, no children).
+        # So walk MSYS's OWN process table: collect every descendant of the wrapper from ps
+        # PID/PPID, then for each one taskkill its WINPID — which does catch a NATIVE child
+        # (node.exe et al) hanging off that shell — and kill the MSYS pid itself.
+        # `//F` is the MSYS escape that reaches taskkill as a literal `/F`.
+        while IFS="$(printf '\t')" read -r dpid dwin; do
+          [ -n "$dwin" ] && command -v taskkill >/dev/null 2>&1 \
+            && taskkill //F //T //PID "$dwin" >/dev/null 2>&1 || true
+          [ -n "$dpid" ] && kill -9 "$dpid" 2>/dev/null || true
+        done < <(ps 2>/dev/null | awk -v root="$p" '
+            NR > 1 { pid[NR] = $1; ppid[NR] = $2; win[NR] = $4; n = NR }
+            END {
+              d[root] = 1
+              # Repeat to a fixpoint so grandchildren attach even if ps lists a child
+              # before its parent. The table is small; 20 passes covers any real depth.
+              for (pass = 0; pass < 20; pass++)
+                for (i = 2; i <= n; i++) if (ppid[i] in d) d[pid[i]] = 1
+              for (i = 2; i <= n; i++) if (pid[i] in d) print pid[i] "\t" win[i]
+            }' || true)
+        kill "$p" 2>/dev/null || true
+      fi
     done
   elif [ "$BACKEND" = "wezterm" ]; then
     for name in "${NAMES[@]}"; do wez kill-pane --pane-id "${PANES[$name]:-}" >/dev/null 2>&1 || true; done
