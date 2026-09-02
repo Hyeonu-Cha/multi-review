@@ -413,6 +413,18 @@ if grep -qx 'src/app.py	RIGHT	2	added'   <<<"$dl" \
   ok "hunk parser maps added/context/removed lines to file line numbers"
 else bad "hunk parser maps added/context/removed lines: $dl"; fi
 
+# ---- test 18: blank context line doesn't desync the hunk parser ------------------
+# Some diff producers emit a blank context line with the leading space trimmed. Treating it
+# as "end of hunk" silently dropped every later line in that hunk and shifted the numbering
+# of everything after it — a wrong line number here is an unpostable finding, not a warning.
+printf 'diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1,4 +1,5 @@\n line1\n\n+added\n line4\n' > "$TMP/blank.patch"
+dlb="$(bash "$ROOT/lib/diff-lines.sh" "$TMP/blank.patch")"
+if grep -qx 'x.py	RIGHT	2	context' <<<"$dlb" \
+   && grep -qx 'x.py	RIGHT	3	added' <<<"$dlb" \
+   && grep -qx 'x.py	RIGHT	4	context' <<<"$dlb"; then
+  ok "blank context line keeps hunk line numbering in sync"
+else bad "blank context line keeps hunk line numbering in sync: $dlb"; fi
+
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

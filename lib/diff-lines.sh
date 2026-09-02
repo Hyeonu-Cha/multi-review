@@ -33,6 +33,7 @@ awk '
   }
   path == "" || !inhunk { next }                        # preamble (diff --git, index, …)
   /No newline at end of file/ { next }                  # git no-newline marker
+  /^$/ { print path "	RIGHT	" new "	context"; new++; old++; next }  # blank context line (space trimmed)
   /^\+/ { print path "\tRIGHT\t" new "\tadded";   new++; next }
   /^-/  { print path "\tLEFT\t"  old "\tremoved"; old++; next }
   /^ /  { print path "\tRIGHT\t" new "\tcontext"; new++; old++; next }

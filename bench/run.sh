@@ -199,6 +199,9 @@ LOCTSV="$TMPR/difflines.tsv"; : > "$LOCTSV"
 
 loc_score() {  # loc_score <json> <jq filter emitting file|side|line> → "postable/total"
   local f="$1" filter="$2" total=0 hits=0 file side line
+  # No diff resolved → every finding would score unpostable, which reads as "the reviewers
+  # are terrible" instead of "the input is missing". Say n/a rather than report a wrong 0/N.
+  [ -s "$LOCTSV" ] || { echo "n/a"; return; }
   while IFS='|' read -r file side line; do
     [ -n "$file" ] && [ -n "$line" ] || continue
     total=$((total+1))
