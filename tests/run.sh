@@ -261,8 +261,11 @@ mkconfig "$TMP/fake_hang.sh"
 out="$(cd "$ROOT" && MULTI_REVIEW_CONFIG="$TMP/config.json" \
   bash bin/multi-review --diff "$TMP/fixture.patch" --no-reconcile --timeout 1 2>&1)"
 sleep 2  # let the kill propagate
-# mirror the engine's process-group capability detection: job control on non-Windows
-if [[ "$OSTYPE" != msys* && "$OSTYPE" != cygwin* && "$OSTYPE" != win* ]]; then subtree_kill=1; else subtree_kill=0; fi
+# Mirror the engine's subtree-kill capability: job control on non-Windows, taskkill on
+# Windows. Both tests 12 and 13 now exercise a real kill on Git Bash too.
+if [[ "$OSTYPE" != msys* && "$OSTYPE" != cygwin* && "$OSTYPE" != win* ]]; then subtree_kill=1
+elif command -v taskkill >/dev/null 2>&1; then subtree_kill=1
+else subtree_kill=0; fi
 if [ "$subtree_kill" -eq 0 ]; then
   ok "none-backend timeout subtree kill (skipped: no process-group support)"
 elif grep -q timeout <<<"$out" && [ -f "$GC_PID" ] && gc="$(cat "$GC_PID")" \
