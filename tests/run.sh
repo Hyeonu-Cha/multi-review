@@ -387,6 +387,44 @@ if [ -n "$ws" ] && [ -f "$ws/prompt.md" ] && grep -q 'FooService.cs' "$ws/prompt
   ok "C# type reference resolves to related context (Tier 3)"
 else bad "C# type reference resolves to related context: $out"; fi
 
+# ---- test 17: hunk parser maps diff lines to real file line numbers --------------
+# The whole point: a finding's line must be the NEW-FILE line number, not its position in
+# the diff text. This is what localization scoring checks against, and what tells a
+# pre-existing `context` line apart from an `added` one.
+cat > "$TMP/hunks.patch" <<'EOF'
+diff --git a/src/app.py b/src/app.py
+index 0000000..1111111 100644
+--- a/src/app.py
++++ b/src/app.py
+@@ -1,3 +1,4 @@
+ def main():
++    x = 1 / 0
+     return 0
+@@ -10,2 +11,2 @@ def other():
+-    old_line()
++    new_line()
+EOF
+dl="$(bash "$ROOT/lib/diff-lines.sh" "$TMP/hunks.patch")"
+if grep -qx 'src/app.py	RIGHT	2	added'   <<<"$dl" \
+   && grep -qx 'src/app.py	RIGHT	1	context' <<<"$dl" \
+   && grep -qx 'src/app.py	RIGHT	3	context' <<<"$dl" \
+   && grep -qx 'src/app.py	LEFT	10	removed' <<<"$dl" \
+   && grep -qx 'src/app.py	RIGHT	11	added'  <<<"$dl"; then
+  ok "hunk parser maps added/context/removed lines to file line numbers"
+else bad "hunk parser maps added/context/removed lines: $dl"; fi
+
+# ---- test 18: blank context line doesn't desync the hunk parser ------------------
+# Some diff producers emit a blank context line with the leading space trimmed. Treating it
+# as "end of hunk" silently dropped every later line in that hunk and shifted the numbering
+# of everything after it — a wrong line number here is an unpostable finding, not a warning.
+printf 'diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1,4 +1,5 @@\n line1\n\n+added\n line4\n' > "$TMP/blank.patch"
+dlb="$(bash "$ROOT/lib/diff-lines.sh" "$TMP/blank.patch")"
+if grep -qx 'x.py	RIGHT	2	context' <<<"$dlb" \
+   && grep -qx 'x.py	RIGHT	3	added' <<<"$dlb" \
+   && grep -qx 'x.py	RIGHT	4	context' <<<"$dlb"; then
+  ok "blank context line keeps hunk line numbering in sync"
+else bad "blank context line keeps hunk line numbering in sync: $dlb"; fi
+
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
