@@ -185,7 +185,30 @@ else
     name="${line#FINDINGS[}"; name="${name%%]=*}"
     FINDINGS["$name"]="${line#*=}"
   done < <(grep -o 'FINDINGS\[[^]]*\]=.*' <<<"$out" | tr -d '\r')
+  RUNDIR="$(grep -o 'WORKSPACE=.*' <<<"$out" | tail -1 | cut -d= -f2- | tr -d '\r')"
 fi
+
+# ---- localization: could each finding even be posted? ----------------------------
+# A finding whose (path, side, line) is not a line the diff exposes gets rejected 422 by the
+# reviews API — in the headless path that means the finding is LOST, not merely misplaced.
+# Scored against the hunk parser (lib/diff-lines.sh) instead of eyeballed.
+DIFF_PATH="$(grep -o 'DIFF=.*' <<<"$out" | tail -1 | cut -d= -f2- | tr -d '\r')"
+[ -n "${DIFF_PATH:-}" ] || DIFF_PATH="${RUNDIR:-}/diff.patch"
+LOCTSV="$TMPR/difflines.tsv"; : > "$LOCTSV"
+[ -f "$DIFF_PATH" ] && bash "$ROOT/lib/diff-lines.sh" "$DIFF_PATH" > "$LOCTSV" 2>/dev/null || true
+
+loc_score() {  # loc_score <json> <jq filter emitting file|side|line> → "postable/total"
+  local f="$1" filter="$2" total=0 hits=0 file side line
+  while IFS='|' read -r file side line; do
+    [ -n "$file" ] && [ -n "$line" ] || continue
+    total=$((total+1))
+    case "$side" in RIGHT|LEFT) ;; *) side=RIGHT;; esac
+    awk -F'\t' -v f="$file" -v s="$side" -v l="$line" '
+      $2==s && $3==l && ($1==f || index(f, "/" $1) > 0 || index($1, "/" f) > 0) { found=1; exit }
+      END { exit !found }' "$LOCTSV" && hits=$((hits+1)) || true
+  done < <(jqr -r "$filter" "$f" 2>/dev/null || true)
+  [ "$total" -gt 0 ] && echo "$hits/$total" || echo "0/0"
+}
 
 if [ "${#FINDINGS[@]}" -eq 0 ]; then
   echo "no reviewer produced findings — nothing to score" >&2
@@ -261,9 +284,24 @@ if [ "$JUDGE" -eq 1 ]; then
   printf '%-10s' "${jfp:-0}"
 fi
 echo
+
+# Localization: of the findings each reviewer produced, how many land on a line the diff
+# actually exposes. Anything else is unpostable (422) — a hard loss, not a soft miss.
+printf '%-22s' "localization"
+for n in "${NAMES[@]}"; do
+  printf '%-10s' "$(loc_score "${FINDINGS[$n]}" '.findings[] | "\(.file)|\(.side // "RIGHT")|\(.line)"')"
+done
+printf '%-10s' "-"
+if [ "$JUDGE" -eq 1 ]; then
+  printf '%-10s' "$(loc_score "$FINAL_JSON" '.comments[] | "\(.path)|\(.side // "RIGHT")|\(.line)"')"
+fi
+echo
 echo
 echo "recall union = caught by at least one reviewer (raw pipeline recall, before the judge)."
 echo "false-pos = findings on the clean control file (app/clean.py) — noise proxy; 0 is ideal."
+echo "localization = findings landing on a line the diff exposes / findings produced. The"
+echo "  remainder are unpostable (the reviews API 422s them), so they are lost outright —"
+echo "  a reviewer with great recall and poor localization delivers little."
 if [ "$JUDGE" -eq 1 ]; then
   echo
   echo "JUDGE = what survived the reconciler's refute-first verification, scored the same way."

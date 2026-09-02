@@ -387,6 +387,32 @@ if [ -n "$ws" ] && [ -f "$ws/prompt.md" ] && grep -q 'FooService.cs' "$ws/prompt
   ok "C# type reference resolves to related context (Tier 3)"
 else bad "C# type reference resolves to related context: $out"; fi
 
+# ---- test 17: hunk parser maps diff lines to real file line numbers --------------
+# The whole point: a finding's line must be the NEW-FILE line number, not its position in
+# the diff text. This is what localization scoring checks against, and what tells a
+# pre-existing `context` line apart from an `added` one.
+cat > "$TMP/hunks.patch" <<'EOF'
+diff --git a/src/app.py b/src/app.py
+index 0000000..1111111 100644
+--- a/src/app.py
++++ b/src/app.py
+@@ -1,3 +1,4 @@
+ def main():
++    x = 1 / 0
+     return 0
+@@ -10,2 +11,2 @@ def other():
+-    old_line()
++    new_line()
+EOF
+dl="$(bash "$ROOT/lib/diff-lines.sh" "$TMP/hunks.patch")"
+if grep -qx 'src/app.py	RIGHT	2	added'   <<<"$dl" \
+   && grep -qx 'src/app.py	RIGHT	1	context' <<<"$dl" \
+   && grep -qx 'src/app.py	RIGHT	3	context' <<<"$dl" \
+   && grep -qx 'src/app.py	LEFT	10	removed' <<<"$dl" \
+   && grep -qx 'src/app.py	RIGHT	11	added'  <<<"$dl"; then
+  ok "hunk parser maps added/context/removed lines to file line numbers"
+else bad "hunk parser maps added/context/removed lines: $dl"; fi
+
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
