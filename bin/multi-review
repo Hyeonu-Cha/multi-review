@@ -661,6 +661,38 @@ if [ -s "$CONTEXT_MD" ]; then
   cat "$CONTEXT_MD" >> "$RECON_IN"
 fi
 
+# Ground truth for the judge's pre-existing rule. It could read `+` prefixes off the diff
+# itself, but that is exactly the judgement call it gets wrong — miscredited pre-existing
+# bugs are the top false-positive class — so hand it the added-line set outright, computed
+# by the same hunk parser the benchmark scores with. Judge-side only: the reviewers are left
+# unchanged so the benchmark's raw-vs-judged comparison stays interpretable.
+ADDED_TXT="$RUN/_added_lines.txt"
+bash "$ROOT/lib/diff-lines.sh" "$DIFF" 2>/dev/null | awk -F'\t' '
+  function emit(   i, out, start, prev) {
+    if (n == 0) return
+    out = ""; start = L[1]; prev = L[1]
+    for (i = 2; i <= n; i++) {
+      if (L[i] == prev + 1) { prev = L[i]; continue }
+      out = out (out == "" ? "" : ", ") (start == prev ? start : start "-" prev)
+      start = L[i]; prev = L[i]
+    }
+    out = out (out == "" ? "" : ", ") (start == prev ? start : start "-" prev)
+    print cur ": " out
+  }
+  $4 == "added" {
+    if ($1 != cur) { emit(); cur = $1; n = 0 }
+    L[++n] = $3
+  }
+  END { emit() }
+' > "$ADDED_TXT" 2>/dev/null || : > "$ADDED_TXT"
+if [ -s "$ADDED_TXT" ]; then
+  { echo; echo "## Lines this change introduced (RIGHT side, new-file numbering)"; echo; echo \
+    "Only these lines were ADDED by this change. Every other line in the diff was already"; echo \
+    "there. A finding whose line is not listed here was NOT introduced by this PR — drop it,"; echo \
+    "or keep it only as a LOW \"pre-existing\" note. Do not charge it to this change."; echo; } >> "$RECON_IN"
+  cat "$ADDED_TXT" >> "$RECON_IN"
+fi
+
 # ---- reconcile (headless) ---------------------------------------------------
 # The selected reconciler's command: the default lives in .reconciler.cmd; any other
 # name must be defined in the optional .reconcilers map so --reconciler actually works.
