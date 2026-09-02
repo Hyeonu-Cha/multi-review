@@ -798,10 +798,64 @@ if [ "$POST" -eq 1 ]; then
   jqr --slurpfile cs "$POSTKEEP" '.comments = $cs[0]' "$PAYLOAD" > "$PAYLOAD.tmp" && mv "$PAYLOAD.tmp" "$PAYLOAD"
   [ "$skipped" -gt 0 ] && echo "› skipped $skipped finding(s) already posted by a previous run"
 
+  # Drop comments GitHub would reject before sending. The reviews API rejects the ENTIRE
+  # review if a single inline comment names a line the diff doesn't expose, so one bad line
+  # number would discard every finding in the run. Filter against the same hunk parser the
+  # benchmark scores localization with, and fold anything dropped into the body so its
+  # content still reaches the PR instead of vanishing.
+  # Path matching is deliberately tolerant (exact, or either side a "/"-suffix of the other):
+  # a false keep is recoverable — it just triggers the body-only retry below — while a false
+  # drop would silently detach a good finding.
+  UNPOSTABLE="$RUN/_unpostable.txt"; : > "$UNPOSTABLE"
+  DLTSV="$RUN/_difflines.tsv"; : > "$DLTSV"
+  [ -s "$DIFF" ] && bash "$ROOT/lib/diff-lines.sh" "$DIFF" > "$DLTSV" 2>/dev/null || : > "$DLTSV"
+  if [ -s "$DLTSV" ] && [ "$(jqr '.comments|length' "$PAYLOAD")" -gt 0 ]; then
+    POSTABLE="$RUN/_postable.jsonl"; : > "$POSTABLE"
+    while IFS= read -r c; do
+      cpath="$(jq -r '.path // ""' <<<"$c")"
+      cline="$(jq -r '.line // ""' <<<"$c")"
+      cside="$(jq -r '.side // "RIGHT"' <<<"$c")"
+      if awk -F'\t' -v f="$cpath" -v s="$cside" -v l="$cline" '
+           $2 == s && $3 == l && ($1 == f || index(f, "/" $1) > 0 || index($1, "/" f) > 0) { ok = 1; exit }
+           END { exit !ok }' "$DLTSV"; then
+        printf '%s\n' "$c" >> "$POSTABLE"
+      else
+        jq -r '"- **\(.path):\(.line)** — \(.body // "" | split("\n")[0])"' <<<"$c" >> "$UNPOSTABLE"
+      fi
+    done < <(jqr -c '.comments[]' "$PAYLOAD")
+    jq -s '.' "$POSTABLE" > "$POSTKEEP" && rm -f "$POSTABLE"
+    jqr --slurpfile cs "$POSTKEEP" '.comments = $cs[0]' "$PAYLOAD" > "$PAYLOAD.tmp" && mv "$PAYLOAD.tmp" "$PAYLOAD"
+  fi
+  if [ -s "$UNPOSTABLE" ]; then
+    n_unpost="$(wc -l < "$UNPOSTABLE" | tr -d ' ')"
+    jqr --rawfile list "$UNPOSTABLE" --arg n "$n_unpost" \
+      '.body += "\n\n---\n\n_\($n) finding(s) name a line this diff does not expose, so GitHub cannot attach them inline (and one would reject the whole review). Listed here instead:_\n\n" + $list' \
+      "$PAYLOAD" > "$PAYLOAD.tmp" && mv "$PAYLOAD.tmp" "$PAYLOAD"
+    echo "› $n_unpost finding(s) not on a diff line — moved into the review body"
+  fi
+
   if [ "$(jqr '.comments|length' "$PAYLOAD")" -eq 0 ] && [ "$skipped" -gt 0 ]; then
     echo "› nothing new to post on $OWNER/$REPO #$PR"
   else
-    gh api "repos/$OWNER/$REPO/pulls/$PR/reviews" --input "$PAYLOAD" >/dev/null
-    echo "› posted review to $OWNER/$REPO #$PR (inline comments pinned to ${HEAD_SHA:0:7})"
+    POST_ERR="$RUN/_post_error.txt"
+    if gh api "repos/$OWNER/$REPO/pulls/$PR/reviews" --input "$PAYLOAD" >/dev/null 2>"$POST_ERR"; then
+      echo "› posted review to $OWNER/$REPO #$PR (inline comments pinned to ${HEAD_SHA:0:7})"
+    else
+      # The pre-filter removes the cause we can see; this is the safety net for the rest
+      # (a line GitHub rejects for its own reasons, an outdated head, a moved file). Its 422
+      # never says WHICH comment is at fault, so bisecting would cost many API calls for a
+      # rare case — instead retry once with the findings folded into the body, so a whole
+      # review's work is never lost to one bad line.
+      echo "› inline comments rejected by GitHub — retrying with findings in the review body" >&2
+      head -3 "$POST_ERR" >&2 || true
+      jqr '.body += "\n\n---\n\n_GitHub rejected the inline comments for this review, so the findings are listed below instead._\n\n"
+             + ([.comments[]? | "- **\(.path):\(.line)** — \(.body // "" | split("\n")[0])"] | join("\n"))
+           | .comments = []' "$PAYLOAD" > "$PAYLOAD.fallback"
+      if gh api "repos/$OWNER/$REPO/pulls/$PR/reviews" --input "$PAYLOAD.fallback" >/dev/null 2>>"$POST_ERR"; then
+        echo "› posted review body to $OWNER/$REPO #$PR (inline attachment failed; findings are in the body)"
+      else
+        die "could not post review to $OWNER/$REPO #$PR — payload: $PAYLOAD, error: $POST_ERR"
+      fi
+    fi
   fi
 fi
