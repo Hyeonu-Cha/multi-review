@@ -425,6 +425,25 @@ if grep -qx 'x.py	RIGHT	2	context' <<<"$dlb" \
   ok "blank context line keeps hunk line numbering in sync"
 else bad "blank context line keeps hunk line numbering in sync: $dlb"; fi
 
+# ---- test 19: judge input carries the added-line set ------------------------------
+# The judge must not charge a pre-existing defect to this PR, and reading `+` prefixes off
+# the diff is exactly the call it gets wrong. The fixture adds ONE line (src/app.py:2);
+# lines 1 and 3 are context, so the annotation must say "2" and nothing else.
+RECON_COPY2="$TMP/recon_in2.md"; rm -f "$RECON_COPY2"
+cat > "$TMP/fakerec2.sh" <<EOF
+#!/usr/bin/env bash
+cp "\$1" "$RECON_COPY2"
+printf '%s' '{"body":"ok","event":"COMMENT","comments":[]}' > "\$2"
+EOF
+mkconfig "$TMP/fake1.sh" "bash $TMP/fakerec2.sh {PROMPT} {OUT}"
+out="$(cd "$REPO" && MULTI_REVIEW_CONFIG="$TMP/config.json" \
+  bash "$ROOT/bin/multi-review" --diff "$TMP/fixture.patch" --timeout 60 2>&1)"
+if [ -f "$RECON_COPY2" ] \
+   && grep -q 'Lines this change introduced' "$RECON_COPY2" \
+   && grep -qx 'src/app.py: 2' "$RECON_COPY2"; then
+  ok "judge input lists the lines the change actually introduced"
+else bad "judge input lists introduced lines: $out"; fi
+
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
