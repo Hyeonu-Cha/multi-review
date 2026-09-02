@@ -164,7 +164,18 @@ case "$args" in
   *"--json owner,name"*)   echo "own repo";;
   *"pulls/7/comments"*)    cat "$FAKE_GH_COMMENTS" 2>/dev/null || true;;
   *"pulls/7/reviews"*)     prev=""; for a in "$@"; do
-                             [ "$prev" = "--input" ] && cp "$a" "$FAKE_GH_POSTED"
+                             if [ "$prev" = "--input" ]; then
+                               # Mimic the reviews API: with FAKE_GH_REJECT_INLINE=1 a payload
+                               # carrying ANY inline comment is refused wholesale (that is what
+                               # GitHub does for one out-of-range line); a body-only payload
+                               # still succeeds, which is exactly what the retry sends.
+                               if [ "${FAKE_GH_REJECT_INLINE:-0}" = 1 ] \
+                                  && [ "$(jq '.comments|length' "$a")" -gt 0 ]; then
+                                 echo '{"message":"Validation Failed","errors":[{"field":"line","code":"invalid"}]}' >&2
+                                 exit 1
+                               fi
+                               cp "$a" "$FAKE_GH_POSTED"
+                             fi
                              prev="$a"
                            done;;
   *) echo "fake-gh: unhandled: $args" >&2; exit 1;;
@@ -446,6 +457,47 @@ if [ -f "$RECON_COPY2" ] \
    && grep -qx 'src/app.py: 2' "$RECON_COPY2"; then
   ok "judge input lists the lines the change actually introduced"
 else bad "judge input lists introduced lines: $out"; fi
+
+# ---- test 20: an unpostable line is filtered out, not left to sink the review -----
+# The reviews API rejects the WHOLE review if one comment names a line the diff doesn't
+# expose. The fixture diff exposes src/app.py lines 1-3 only, so a finding on line 4242 must
+# be stripped from .comments and its text carried into .body instead of being lost.
+cat > "$TMP/fake_badline.sh" <<'EOF'
+#!/usr/bin/env bash
+cat > "$1" <<'JSON'
+{"reviewer":"fake","findings":[
+ {"file":"src/app.py","line":2,"side":"RIGHT","severity":"high","category":"bug","title":"real one","detail":"on a diff line","suggestion":null,"confidence":0.9},
+ {"file":"src/app.py","line":4242,"side":"RIGHT","severity":"high","category":"bug","title":"ghost line","detail":"not in the diff","suggestion":null,"confidence":0.9}
+]}
+JSON
+EOF
+cat > "$TMP/passthru_rec.sh" <<'EOF'
+#!/usr/bin/env bash
+jq '{body:"## PR Review", event:"COMMENT",
+     comments:[.findings[]|{path:.file,line:.line,side:.side,body:("[[HIGH]] "+.title)}]}' \
+  "$(ls -1 "$(dirname "$1")"/*.json | grep -v '_' | head -1)" > "$2"
+EOF
+mkconfig "$TMP/fake_badline.sh" "bash $TMP/passthru_rec.sh {PROMPT} {OUT}"
+rm -f "$FAKE_GH_POSTED"; : > "$FAKE_GH_COMMENTS"
+out="$(post_run)"
+if [ -f "$FAKE_GH_POSTED" ] \
+   && jq -e '[.comments[].line] | index(4242) | not' "$FAKE_GH_POSTED" >/dev/null \
+   && jq -e '[.comments[].line] | index(2) != null' "$FAKE_GH_POSTED" >/dev/null \
+   && jq -e '.body | contains("4242")' "$FAKE_GH_POSTED" >/dev/null; then
+  ok "post: off-diff comment filtered out and carried into the review body"
+else bad "post: off-diff comment filtered: $out"; fi
+
+# ---- test 21: a rejected inline post degrades to body-only, not to nothing --------
+# If GitHub still refuses the inline comments, the whole review used to be lost under set -e.
+# It must retry body-only so the findings still reach the PR.
+rm -f "$FAKE_GH_POSTED"; : > "$FAKE_GH_COMMENTS"
+out="$(FAKE_GH_REJECT_INLINE=1 post_run)"
+if [ -f "$FAKE_GH_POSTED" ] \
+   && jq -e '.comments | length == 0' "$FAKE_GH_POSTED" >/dev/null \
+   && jq -e '.body | contains("rejected the inline comments")' "$FAKE_GH_POSTED" >/dev/null \
+   && jq -e '.body | contains("src/app.py:2")' "$FAKE_GH_POSTED" >/dev/null; then
+  ok "post: inline rejection falls back to a body-only review instead of losing it"
+else bad "post: inline rejection falls back to body-only: $out"; fi
 
 echo
 echo "$pass passed, $fail failed"
