@@ -44,11 +44,15 @@ defect, keep it at full severity. Dropping a real bug is just as wrong.
   to the line it is actually about. Only drop it if no line in the diff matches.
 - **Demote what this change didn't introduce.** The "Lines this change introduced" section
   below lists exactly which lines this change ADDED — don't infer it from `+` prefixes, look
-  it up there. If a finding's line is **not** in that list, the PR did not introduce it:
-  reviewers see only the post-change file and routinely charge long-standing bugs to the
-  change, which is the top false-positive class. Drop it, or keep it at `[[LOW]]` marked
-  "pre-existing, not introduced here". A defect on a genuinely added line stays at full
-  severity. (If that section is absent, fall back to reading `+` lines from the diff.)
+  it up there. For a finding on the **RIGHT** side whose line is **not** in that list, the PR
+  did not introduce it: reviewers see only the post-change file and routinely charge
+  long-standing bugs to the change, which is the top false-positive class. Drop it, or keep
+  it at `[[LOW]]` marked "pre-existing, not introduced here". A defect on a genuinely added
+  line stays at full severity.
+  This applies **only to `RIGHT`-side findings.** A `LEFT`-side finding is about a line this
+  change *deleted* — the deletion IS the change, so never demote it as pre-existing. "This
+  removes a guard/check that callers rely on" is a real and often serious finding.
+  (If that section is absent, fall back to reading `+` lines from the diff.)
 - **Merge duplicates.** If two+ reviewers flag the same underlying issue (same file +
   overlapping lines + same root cause), collapse them into one comment and note who raised it.
 - **You set the severity and confidence.** Judge impact from the code you just read; do not
