@@ -244,7 +244,13 @@ snapshot() {
   if [ -n "$SNAP_REF" ]; then git show "$SNAP_REF:$1" 2>/dev/null
   else [ -f "$1" ] && cat -- "$1"; fi
 }
+# Per-file cap (default 3000; 0 = unlimited, matching the total caps below). The 0 case has
+# to be special-cased: without it FULLFILE_LINE_CAP=0 meant "truncate every changed file to
+# zero lines", emitting an empty fenced block per file AND skipping every related file (the
+# related loop drops anything larger than the per-file cap) — i.e. it silently emptied the
+# reviewers' context instead of disabling the limit.
 FILE_CAP="$(numenv "${FULLFILE_LINE_CAP:-3000}" 3000 FULLFILE_LINE_CAP)"
+if [ "$FILE_CAP" -eq 0 ]; then FILE_CAP=1000000000; fi
 # Total budget across ALL changed files (default 30000; 0 = unlimited). Without it a
 # 30-file PR could build a ~90k-line prompt that silently exceeds a reviewer CLI's
 # context window — the worst starvation exactly on the PRs that most need review.
@@ -658,13 +664,18 @@ echo "› saved: $FINAL"
 if [ "$POST" -eq 1 ]; then
   [ -n "$PR" ] || die "--post requires a PR number"
   need gh
-  read -r OWNER REPO < <(gh repo view --json owner,name -q '.owner.login + " " + .name' | tr -d '\r')
+  # `|| true`: under `set -e` a failing gh (or empty output) would abort here with a bare
+  # exit status, before the friendly die below ever runs. Same guard shape as $INTENT above.
+  OWNER=""; REPO=""
+  read -r OWNER REPO < <(gh repo view --json owner,name -q '.owner.login + " " + .name' | tr -d '\r') || true
   [ -n "$OWNER" ] && [ -n "$REPO" ] || die "could not resolve owner/repo via gh"
 
   # Pin the review to the head we actually reviewed. Without commit_id GitHub anchors
   # to whatever the head is at post time — a push during the (long) review run would
   # land every comment on the wrong lines.
-  HEAD_SHA="$(gh pr view "$PR" --json headRefOid -q .headRefOid | tr -d '\r')"
+  # `|| HEAD_SHA=""`: with `pipefail`, a failing gh makes the whole pipeline non-zero and
+  # `set -e` would abort before the friendly die below.
+  HEAD_SHA="$(gh pr view "$PR" --json headRefOid -q .headRefOid | tr -d '\r')" || HEAD_SHA=""
   [ -n "$HEAD_SHA" ] || die "could not resolve PR head SHA"
 
   # A model verdict must not gate merges unless explicitly allowed (--block).

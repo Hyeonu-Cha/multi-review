@@ -3,3 +3,7 @@ out/
 
 # local tooling artifacts (caches, etc.)
 cache/
+
+# local scratch kept in the working tree (not part of the plugin)
+Standard-PR-prompt.md
+antigravity-statusline/

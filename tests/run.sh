@@ -327,6 +327,21 @@ if [ -f "$RECON_COPY" ] \
   ok "reconcile input carries changed-file context for claim verification"
 else bad "reconcile input carries changed-file context: $out"; fi
 
+# ---- test 15: FULLFILE_LINE_CAP=0 means unlimited, not "truncate to nothing" ------
+# 0 is the "no limit" sentinel for the other caps. Without special-casing it here, 0 meant
+# head -n 0 per changed file (an empty fenced block) AND skipped every related file, because
+# the related loop drops anything larger than the per-file cap — silently emptying context.
+mkconfig "$TMP/fake1.sh"
+out="$(cd "$REPO" && MULTI_REVIEW_CONFIG="$TMP/config.json" FULLFILE_LINE_CAP=0 \
+  bash "$ROOT/bin/multi-review" --diff "$TMP/fixture.patch" --no-reconcile --timeout 60 2>&1)"
+ws="$(grep -o 'WORKSPACE=.*' <<<"$out" | cut -d= -f2 | tr -d '\r')"
+if [ -n "$ws" ] && [ -f "$ws/prompt.md" ] \
+   && grep -q 'def main' "$ws/prompt.md" \
+   && ! grep -q 'showing first 0' "$ws/prompt.md" \
+   && grep -q 'sibling.py' "$ws/prompt.md"; then
+  ok "FULLFILE_LINE_CAP=0 disables the per-file limit instead of emptying context"
+else bad "FULLFILE_LINE_CAP=0 disables the per-file limit: $out"; fi
+
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -1,7 +1,7 @@
 # multi-review
 
 [![CI](https://github.com/Hyeonu-Cha/multi-review/actions/workflows/ci.yml/badge.svg)](https://github.com/Hyeonu-Cha/multi-review/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-19%20passing-brightgreen)](tests/run.sh)
+[![tests](https://img.shields.io/badge/tests-passing-brightgreen)](tests/run.sh)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FHyeonu-Cha%2Fmulti-review%2Fmain%2F.claude-plugin%2Fplugin.json&query=%24.version&label=version&color=blue)](.claude-plugin/plugin.json)
 
@@ -69,8 +69,9 @@ works without any terminal. Output that arrives wrapped in markdown fences or pr
 **salvaged** (the outermost JSON object is extracted; original kept at `<name>.json.raw`)
 instead of dropping the reviewer, and individual findings missing a typed
 `file`/`line`/`severity` are dropped so downstream stages can trust every field. A final
-headless reconcile pass merges duplicates, boosts issues multiple models agree on, drops
-noise, and ranks by severity.
+headless reconcile pass acts as a **judge**: it verifies each candidate finding against the
+code, drops what it can't confirm, merges duplicates, and ranks by severity. Reviewers are
+treated as candidate generators, so agreement means "more candidates to check", not proof.
 
 **Context handed to every reviewer:** the diff; the **change intent** (PR
 title/description in PR mode, commit subjects in branch mode) so reviewers can flag
