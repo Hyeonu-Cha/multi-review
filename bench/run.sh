@@ -90,6 +90,18 @@ def helper():
     return 42
 EOF
 
+# Pre-existing-defect control. `average` divides by len() with no empty guard — a real bug,
+# but it ships in the BASE commit. The change below only appends a function to this file, so
+# the defective line surfaces as a diff CONTEXT line, not an added one. External reviewers
+# see the whole post-change file and cannot tell the difference, so they flag it; the judge
+# has the diff and must NOT charge it to this PR (drop it, or keep it as a LOW "pre-existing"
+# note). Miscredited pre-existing bugs are the top false-positive class, and until now the
+# demotion rule shipped with zero coverage.
+cat > "$REPO/app/legacy.py" <<'EOF'
+def average(values):
+    return sum(values) / len(values)
+EOF
+
 git -C "$REPO" init -q
 git -C "$REPO" -c user.name=bench -c user.email=b@b add -A
 git -C "$REPO" -c user.name=bench -c user.email=b@b commit -qm "base app"
@@ -149,6 +161,16 @@ def render(session, samples):
     auth.check_session(session)
     return json.dumps({"avg": average_latency(session, samples)})
 EOF
+
+# Touch app/legacy.py without changing its defective line: appending here puts the
+# pre-existing `sum/len` on line 2 into the hunk as a CONTEXT line. That is what makes it
+# a pre-existing case rather than an introduced one.
+cat >> "$REPO/app/legacy.py" <<'EOF'
+
+
+def total(values):
+    return sum(values)
+EOF
 git -C "$REPO" -c user.name=bench -c user.email=b@b add -A
 git -C "$REPO" -c user.name=bench -c user.email=b@b commit -qm "Add read-only stats endpoint"
 
@@ -185,14 +207,16 @@ else
     name="${line#FINDINGS[}"; name="${name%%]=*}"
     FINDINGS["$name"]="${line#*=}"
   done < <(grep -o 'FINDINGS\[[^]]*\]=.*' <<<"$out" | tr -d '\r')
-  RUNDIR="$(grep -o 'WORKSPACE=.*' <<<"$out" | tail -1 | cut -d= -f2- | tr -d '\r')"
+  RUNDIR="$(grep -o 'WORKSPACE=.*' <<<"$out" | tail -1 | cut -d= -f2- | tr -d '\r')" || RUNDIR=""
 fi
 
 # ---- localization: could each finding even be posted? ----------------------------
 # A finding whose (path, side, line) is not a line the diff exposes gets rejected 422 by the
 # reviews API — in the headless path that means the finding is LOST, not merely misplaced.
+# `|| DIFF_PATH=""`: judge mode never prints DIFF=, and under set -e + pipefail a grep with
+# no match would abort the whole script before any scoring ran.
 # Scored against the hunk parser (lib/diff-lines.sh) instead of eyeballed.
-DIFF_PATH="$(grep -o 'DIFF=.*' <<<"$out" | tail -1 | cut -d= -f2- | tr -d '\r')"
+DIFF_PATH="$(grep -o 'DIFF=.*' <<<"$out" | tail -1 | cut -d= -f2- | tr -d '\r')" || DIFF_PATH=""
 [ -n "${DIFF_PATH:-}" ] || DIFF_PATH="${RUNDIR:-}/diff.patch"
 LOCTSV="$TMPR/difflines.tsv"; : > "$LOCTSV"
 [ -f "$DIFF_PATH" ] && bash "$ROOT/lib/diff-lines.sh" "$DIFF_PATH" > "$LOCTSV" 2>/dev/null || true
@@ -288,6 +312,30 @@ if [ "$JUDGE" -eq 1 ]; then
 fi
 echo
 
+# Pre-existing control: the sum/len defect on app/legacy.py:2 ships in the BASE commit and
+# reaches the diff as a CONTEXT line. Reviewers see only the post-change file, so they cannot
+# tell and will flag it — that is expected and is NOT held against them. The judge does have
+# the diff, and must not charge it to this PR: drop it, or keep it only as a LOW
+# "pre-existing" note. A non-LOW survivor in the JUDGE column means the demotion rule failed.
+printf '%-22s' "pre-existing(raw)"
+for n in "${NAMES[@]}"; do
+  pe="$(jqr -r '[.findings[]
+    | select((.file=="app/legacy.py") or ((.file|tostring)|endswith("/app/legacy.py")))
+    | select(((.line - 2) | if . < 0 then -. else . end) <= 1)
+    ] | length' "${FINDINGS[$n]}" 2>/dev/null || echo '?')"
+  printf '%-10s' "${pe:-0}"
+done
+printf '%-10s' "-"
+if [ "$JUDGE" -eq 1 ]; then
+  jpe="$(jqr -r '[.comments[]
+    | select((.path=="app/legacy.py") or ((.path|tostring)|endswith("/app/legacy.py")))
+    | select(((.line - 2) | if . < 0 then -. else . end) <= 1)
+    | select((.body // "") | test("\\[\\[(CRITICAL|HIGH|MEDIUM)\\]\\]"))
+    ] | length' "$FINAL_JSON" 2>/dev/null || echo '?')"
+  printf '%-10s' "${jpe:-0}"
+fi
+echo
+
 # Localization: of the findings each reviewer produced, how many land on a line the diff
 # actually exposes. Anything else is unpostable (422) — a hard loss, not a soft miss.
 printf '%-22s' "localization"
@@ -302,6 +350,9 @@ echo
 echo
 echo "recall union = caught by at least one reviewer (raw pipeline recall, before the judge)."
 echo "false-pos = findings on the clean control file (app/clean.py) — noise proxy; 0 is ideal."
+echo "pre-existing(raw) = flags on a defect that shipped in the BASE commit (app/legacy.py:2,"
+echo "  a diff context line). Non-zero for reviewers is EXPECTED — they can't tell. In the"
+echo "  JUDGE column it counts only survivors above LOW, where non-zero = demotion failed."
 echo "localization = findings landing on a line the diff exposes / findings produced. The"
 echo "  remainder are unpostable (the reviews API 422s them), so they are lost outright —"
 echo "  a reviewer with great recall and poor localization delivers little."
