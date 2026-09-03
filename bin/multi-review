@@ -354,12 +354,22 @@ if [ "${#ALLFILES[@]}" -gt 0 ]; then
   # a `require(...)` anywhere (usually preceded by const/let, so no line anchor); and
   # line-anchored single-keyword imports (using/use/#include/bare `import y`).
   # `|| true`: no import lines at all is a normal outcome, not an error (grep exits 1).
-  SEGS="$(for f in "${CHANGED[@]}"; do snapshot "$f" 2>/dev/null || true; done \
-    | sed -nE \
-        -e 's@.*\<from[[:space:]]+["'\''(]*([A-Za-z0-9_@./-]+).*@\1@p' \
-        -e 's@.*\<require[[:space:]]*\(["'\'']*([A-Za-z0-9_@./-]+).*@\1@p' \
-        -e 's@^[[:space:]]*(import|using|use|include|#include)[[:space:]<("'\''=]+([A-Za-z0-9_@./-]+).*@\2@p' \
-    | sed -E 's@.*[/.]@@' | grep -E '^[A-Za-z0-9_-]{2,}$' | sort -u | head -n 100 || true)"
+  SEGS="$( { for f in "${CHANGED[@]}"; do snapshot "$f" 2>/dev/null || true; done \
+        | sed -nE \
+            -e 's@.*\<from[[:space:]]+["'\''(]*([A-Za-z0-9_@./-]+).*@\1@p' \
+            -e 's@.*\<require[[:space:]]*\(["'\'']*([A-Za-z0-9_@./-]+).*@\1@p' \
+            -e 's@^[[:space:]]*(import|using|use|include|#include)[[:space:]<("'\''=]+([A-Za-z0-9_@./-]+).*@\2@p' \
+        | sed -E 's@.*[/.]@@'
+      # `from pkg import a, b` names the FILES a and b, but the rule above captures only
+      # `pkg` — a package DIRECTORY, which matches no filename — so the imported modules
+      # were never attached. Measured cost of that gap: app/util.py went missing from the
+      # context, so the judge could not confirm a real broken-reference finding against it
+      # and dropped the bug. Also handles `from . import x` and `import x as y`.
+      for f in "${CHANGED[@]}"; do snapshot "$f" 2>/dev/null || true; done \
+        | sed -nE 's@^[[:space:]]*from[[:space:]]+[A-Za-z0-9_.]+[[:space:]]+import[[:space:]]+(.+)@\1@p' \
+        | tr ',' '\n' \
+        | sed -E 's/^[[:space:]]*//; s/[[:space:]]+as[[:space:]]+.*//; s/[^A-Za-z0-9_].*//'
+    } | grep -E '^[A-Za-z0-9_-]{2,}$' | sort -u | head -n 100 || true)"
   if [ -n "$SEGS" ]; then
     ALT="$(paste -sd'|' <<<"$SEGS")"
     while IFS= read -r c; do
