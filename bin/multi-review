@@ -313,6 +313,8 @@ fi
 #            (import/from/using/use/require/#include) in a changed file
 #   Tier 3 — files named after a type a changed .cs/.java/.kt file references (those
 #            languages import namespaces, not files, so Tier 2 can't resolve them)
+#   Tier 4 — reverse references: files that CONSUME what the change defines, repo-wide,
+#            ranked by match density (tiers 1-3 only look outward, never at callers)
 # Budget: RELATED_TOTAL_CAP total lines (default 10000; 0 disables). Smallest files
 # first so the budget buys the most coverage; files over FULLFILE_LINE_CAP are
 # skipped outright (truncated context is poor context). These files are context
@@ -386,6 +388,36 @@ if [ "${#ALLFILES[@]}" -gt 0 ]; then
         [ -n "${REL_SEEN[$c]:-}" ] && continue
         REL_SEEN["$c"]=1; CAND+=("$c")
       done < <(printf '%s\n' "${ALLFILES[@]}" | grep -E "(^|/)($TALT)\.(cs|java|kt)$" | head -n 20)
+    fi
+  fi
+  # Tier 4: reverse references — the files that CONSUME what this change defines. Tiers 1-3
+  # all look OUTWARD from a changed file (its folder, its imports, its types); none of them
+  # find its callers, and that is exactly where goal 14 (the guard convention sibling handlers
+  # apply) and goal 15 (the registration that must match a consumer) live. Repo-wide on
+  # purpose: a DI registration sits in Program.cs at the project root, not beside
+  # Services/FooService.cs, so directory-scoping would miss the case this exists for.
+  # Ranked by match density so the closest consumers win the remaining budget first.
+  DEFS="$( { for f in "${CHANGED[@]}"; do b="${f##*/}"; printf '%s\n' "${b%.*}"; done
+             for f in "${CHANGED[@]}"; do snapshot "$f" 2>/dev/null || true; done \
+               | sed -nE 's/^[[:space:]]*(export[[:space:]]+)?((public|private|internal|protected|static|async|abstract|sealed)[[:space:]]+)*(def|class|func|function|interface|struct|record|enum|type)[[:space:]]+([A-Za-z_][A-Za-z0-9_]*).*/\5/p'
+           } | grep -E '^[A-Za-z_][A-Za-z0-9_]{2,}$' | sort -u | head -n 50 || true)"
+  if [ -n "$DEFS" ]; then
+    DALT="$(paste -sd'|' <<<"$DEFS")"
+    if [ -n "$SNAP_REF" ]; then
+      # `git grep -c` prints ref:path:count with a ref, path:count without — drop the ref.
+      REVRAW="$(git grep -c -I -E "\\b($DALT)\\b" "$SNAP_REF" -- 2>/dev/null | sed -E 's#^[^:]*:##' || true)"
+    else
+      REVRAW="$(git grep -c -I -E "\\b($DALT)\\b" -- 2>/dev/null || true)"
+    fi
+    if [ -n "$REVRAW" ]; then
+      while IFS= read -r c; do
+        [ -n "$c" ] || continue
+        [ -n "${REL_SEEN[$c]:-}" ] && continue      # changed files are pre-seeded here
+        REL_SEEN["$c"]=1; CAND+=("$c")
+      done < <(printf '%s\n' "$REVRAW" \
+                 | awk '{ n = split($0, a, ":"); cnt = a[n]
+                          print cnt "\t" substr($0, 1, length($0) - length(cnt) - 1) }' \
+                 | sort -rn | head -n 20 | cut -f2-)
     fi
   fi
   if [ "${#CAND[@]}" -gt 0 ]; then
