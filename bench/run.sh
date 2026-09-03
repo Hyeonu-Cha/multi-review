@@ -53,6 +53,14 @@ cat > "$REPO/app/auth.py" <<'EOF'
 def check_session(session):
     if not session.get("user"):
         raise PermissionError("no session")
+
+
+def requires_session(fn):
+    def wrapper(session, *args, **kwargs):
+        check_session(session)
+        return fn(session, *args, **kwargs)
+
+    return wrapper
 EOF
 
 cat > "$REPO/app/handlers.py" <<'EOF'
@@ -90,16 +98,21 @@ def helper():
     return 42
 EOF
 
-# Pre-existing-defect control. `average` divides by len() with no empty guard — a real bug,
-# but it ships in the BASE commit. The change below only appends a function to this file, so
-# the defective line surfaces as a diff CONTEXT line, not an added one. External reviewers
-# see the whole post-change file and cannot tell the difference, so they flag it; the judge
-# has the diff and must NOT charge it to this PR (drop it, or keep it as a LOW "pre-existing"
-# note). Miscredited pre-existing bugs are the top false-positive class, and until now the
-# demotion rule shipped with zero coverage.
+# Pre-existing-defect control. purge_stale() deletes records with no session check, while
+# every sibling handler guards — the same goal-14 shape all three reviewers reliably catch —
+# but it ships in the BASE commit. The change below only appends to this file, so those lines
+# surface as diff CONTEXT, not additions. Reviewers see the whole post-change file and cannot
+# tell, so they flag it; the judge has the diff and must NOT charge it to this PR (drop it,
+# or keep it as a LOW "pre-existing" note).
+# The first version of this control used an unremarkable `sum/len` and drew ZERO flags, so
+# the demotion rule was never exercised at all. A missing guard on a destructive call is the
+# pattern reviewers actually report, which is what makes the control fire.
 cat > "$REPO/app/legacy.py" <<'EOF'
-def average(values):
-    return sum(values) / len(values)
+from app import auth
+
+
+def purge_stale(db, session):
+    db.delete_stale()
 EOF
 
 git -C "$REPO" init -q
@@ -132,44 +145,42 @@ EOF
 # positive. Keep it genuinely clean — if you edit it, make sure it trips none of the
 # review goals, or precision scores go negative for the wrong reason.
 #
-# It is deliberately ADVERSARIAL though: every function is correct but looks defective to a
-# reviewer that reads one line instead of the file. `sum/len` is a div-by-zero ONLY if you
-# miss the `if not samples` guard right above it; `json` looks unused unless you read as far
-# as render(); average_latency looks undefined at its call site unless you scroll up. These
-# are the plausible-but-false candidates the judge must refute — without them a reviewer
-# emits no false positives here and the precision column has no signal to measure.
+# It is deliberately ADVERSARIAL: every function is correct but looks defective at a glance.
+# The first version of this control drew ZERO false positives from all three reviewers,
+# because its traps (a guard three lines above the division, an import used further down)
+# are defeated by simply reading the file — and reviewers are handed the whole file, not a
+# hunk. So the disproof now lives in ANOTHER file: these handlers apply no inline
+# auth.check_session, which reads as the same goal-14 violation every reviewer caught in
+# stats.py, and the only way to tell them apart is to follow @auth.requires_session into
+# app/auth.py and see that the decorator performs the check. `sum/len` stays as a secondary
+# trap. Without traps that actually fire, the false-pos column measures nothing.
 # NOTE: no explanatory comments in the fixture itself — a hint would defuse the trap.
 cat > "$REPO/app/clean.py" <<'EOF'
-import json
-
 from app import auth
 
 
+@auth.requires_session
 def get_status(session):
-    auth.check_session(session)
     return {"status": "ok"}
 
 
-def average_latency(session, samples):
-    auth.check_session(session)
+@auth.requires_session
+def get_latency(session, samples):
     if not samples:
-        return 0.0
-    return sum(samples) / len(samples)
-
-
-def render(session, samples):
-    auth.check_session(session)
-    return json.dumps({"avg": average_latency(session, samples)})
+        return {"avg": 0.0}
+    return {"avg": sum(samples) / len(samples)}
 EOF
 
-# Touch app/legacy.py without changing its defective line: appending here puts the
-# pre-existing `sum/len` on line 2 into the hunk as a CONTEXT line. That is what makes it
-# a pre-existing case rather than an introduced one.
+# Touch app/legacy.py without changing its defective lines: appending here pulls the
+# pre-existing purge_stale() into the hunk as CONTEXT. The appended function is itself
+# correct and guarded, so any finding it draws is a genuine introduced one and can't be
+# confused with the pre-existing case.
 cat >> "$REPO/app/legacy.py" <<'EOF'
 
 
-def total(values):
-    return sum(values)
+def count_stale(db, session):
+    auth.check_session(session)
+    return db.count_stale()
 EOF
 git -C "$REPO" -c user.name=bench -c user.email=b@b add -A
 git -C "$REPO" -c user.name=bench -c user.email=b@b commit -qm "Add read-only stats endpoint"
@@ -312,7 +323,7 @@ if [ "$JUDGE" -eq 1 ]; then
 fi
 echo
 
-# Pre-existing control: the sum/len defect on app/legacy.py:2 ships in the BASE commit and
+# Pre-existing control: the missing-guard defect on app/legacy.py:4-5 ships in the BASE commit and
 # reaches the diff as a CONTEXT line. Reviewers see only the post-change file, so they cannot
 # tell and will flag it — that is expected and is NOT held against them. The judge does have
 # the diff, and must not charge it to this PR: drop it, or keep it only as a LOW
@@ -321,7 +332,7 @@ printf '%-22s' "pre-existing(raw)"
 for n in "${NAMES[@]}"; do
   pe="$(jqr -r '[.findings[]
     | select((.file=="app/legacy.py") or ((.file|tostring)|endswith("/app/legacy.py")))
-    | select(((.line - 2) | if . < 0 then -. else . end) <= 1)
+    | select(((.line - 4) | if . < 0 then -. else . end) <= 1)
     ] | length' "${FINDINGS[$n]}" 2>/dev/null || echo '?')"
   printf '%-10s' "${pe:-0}"
 done
@@ -329,7 +340,7 @@ printf '%-10s' "-"
 if [ "$JUDGE" -eq 1 ]; then
   jpe="$(jqr -r '[.comments[]
     | select((.path=="app/legacy.py") or ((.path|tostring)|endswith("/app/legacy.py")))
-    | select(((.line - 2) | if . < 0 then -. else . end) <= 1)
+    | select(((.line - 4) | if . < 0 then -. else . end) <= 1)
     | select((.body // "") | test("\\[\\[(CRITICAL|HIGH|MEDIUM)\\]\\]"))
     ] | length' "$FINAL_JSON" 2>/dev/null || echo '?')"
   printf '%-10s' "${jpe:-0}"
@@ -350,9 +361,15 @@ echo
 echo
 echo "recall union = caught by at least one reviewer (raw pipeline recall, before the judge)."
 echo "false-pos = findings on the clean control file (app/clean.py) — noise proxy; 0 is ideal."
-echo "pre-existing(raw) = flags on a defect that shipped in the BASE commit (app/legacy.py:2,"
+echo "pre-existing(raw) = flags on a defect that shipped in the BASE commit (app/legacy.py:4-5,"
 echo "  a diff context line). Non-zero for reviewers is EXPECTED — they can't tell. In the"
 echo "  JUDGE column it counts only survivors above LOW, where non-zero = demotion failed."
+echo "  NOTE: measured 2026-09-03 against agy/codex/copilot, both control columns read 0"
+echo "  across two runs and two different control designs — including one whose disproof"
+echo "  lives in another file. These reviewers neither take the adversarial clean-file bait"
+echo "  nor charge context-line defects to the change. So read a 0 here as 'no signal"
+echo "  observed', NOT as 'verified good': both columns are regression GUARDS that will fire"
+echo "  if a prompt change makes reviewers noisier, not live measurements of the judge."
 echo "localization = findings landing on a line the diff exposes / findings produced. The"
 echo "  remainder are unpostable (the reviews API 422s them), so they are lost outright —"
 echo "  a reviewer with great recall and poor localization delivers little."
