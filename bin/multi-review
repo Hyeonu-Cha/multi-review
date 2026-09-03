@@ -86,8 +86,24 @@ salvage_findings() {
 # missing a typed file/line/severity so every consumed field can be trusted.
 clean_findings() {
   local f="$1" tmp="$1.tmp"
+  # The optional multi-line keys are a reliable source of rejected comments: models emit
+  # start_line as null or a string, or swap it past `line` so the range runs backwards, and
+  # the reviews API refuses each of those — which (before the posting filter) meant one
+  # malformed finding could sink the whole review. Sanitize the KEYS rather than dropping the
+  # finding: a real defect shouldn't be discarded over a malformed optional field, it should
+  # just post as a single-line comment. Absent, never null — the API rejects an explicit null.
   jqr '{reviewer: ((.reviewer // "unknown")|tostring),
-        findings: [.findings[]? | select((.file|type)=="string" and (.line|type)=="number" and (.severity|type)=="string")]}' \
+        findings: [ .findings[]?
+          | select((.file|type)=="string" and (.line|type)=="number" and (.severity|type)=="string")
+          | (if ((.side|type) == "string") then (.side |= ascii_upcase) else del(.side) end)
+          | (if (has("side") and .side != "LEFT" and .side != "RIGHT") then del(.side) else . end)
+          | (if (has("start_line") and (((.start_line|type) != "number") or (.start_line >= .line)))
+             then del(.start_line) else . end)
+          | (if (has("start_line") | not) then del(.start_side) else . end)
+          | (if ((.start_side|type) == "string") then (.start_side |= ascii_upcase) else . end)
+          | (if (has("start_side") and .start_side != "LEFT" and .start_side != "RIGHT")
+             then del(.start_side) else . end)
+        ]}' \
     "$f" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
   mv -- "$tmp" "$f"
 }
