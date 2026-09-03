@@ -499,6 +499,44 @@ if [ -f "$FAKE_GH_POSTED" ] \
   ok "post: inline rejection falls back to a body-only review instead of losing it"
 else bad "post: inline rejection falls back to body-only: $out"; fi
 
+# ---- test 22: reverse references attach the CONSUMER of a changed symbol ----------
+# web/routes.py calls handle_request(), which svc/handler.py defines. Nothing in tiers 1-3
+# can reach it: it's in a different folder (not a Tier 1 sibling), handler.py doesn't import
+# it (Tier 2 looks the other way), and Tier 3 is .cs/.java/.kt only. Only a reverse-reference
+# lookup finds a caller — which is where wiring/guard evidence actually lives.
+RVREPO="$TMP/rvrepo"; mkdir -p "$RVREPO/svc" "$RVREPO/web"
+cat > "$RVREPO/svc/handler.py" <<'EOF'
+def handle_request(session, payload):
+    return {"ok": True}
+EOF
+cat > "$RVREPO/web/routes.py" <<'EOF'
+from svc.handler import handle_request
+
+
+def route(session, payload):
+    return handle_request(session, payload)
+EOF
+git -C "$RVREPO" init -q
+git -C "$RVREPO" -c user.name=t -c user.email=t@t add -A
+git -C "$RVREPO" -c user.name=t -c user.email=t@t commit -qm init
+cat > "$TMP/rv.patch" <<'EOF'
+diff --git a/svc/handler.py b/svc/handler.py
+index 1111111..2222222 100644
+--- a/svc/handler.py
++++ b/svc/handler.py
+@@ -1,2 +1,3 @@
+ def handle_request(session, payload):
++    audit(session)
+     return {"ok": True}
+EOF
+mkconfig "$TMP/fake1.sh"
+out="$(cd "$RVREPO" && MULTI_REVIEW_CONFIG="$TMP/config.json" \
+  bash "$ROOT/bin/multi-review" --diff "$TMP/rv.patch" --no-reconcile --timeout 60 2>&1)"
+ws="$(grep -o 'WORKSPACE=.*' <<<"$out" | cut -d= -f2 | tr -d '\r')"
+if [ -n "$ws" ] && [ -f "$ws/prompt.md" ] && grep -q 'web/routes.py' "$ws/prompt.md"; then
+  ok "reverse references attach a consumer of the changed symbol (Tier 4)"
+else bad "reverse references attach a consumer: $out"; fi
+
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
