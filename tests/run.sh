@@ -537,6 +537,40 @@ if [ -n "$ws" ] && [ -f "$ws/prompt.md" ] && grep -q 'web/routes.py' "$ws/prompt
   ok "reverse references attach a consumer of the changed symbol (Tier 4)"
 else bad "reverse references attach a consumer: $out"; fi
 
+# ---- test 23: `from pkg import mod` attaches mod, even past the sibling cap --------
+# Reproduces a miss the benchmark caught end-to-end. Tier 1 attaches at most 3 same-folder
+# siblings; here app/ holds four, so one is cut. Tier 2 must rescue the one the change
+# actually imports — it used to extract only `app` (the package DIRECTORY, matching no
+# file), so app/util.py was never attached, the judge could not confirm a real
+# broken-reference finding against it, and dropped the bug.
+IMPREPO="$TMP/imprepo"; mkdir -p "$IMPREPO/app"
+printf 'def helper():\n    return 42\n'                    > "$IMPREPO/app/util.py"
+printf 'def check(session):\n    pass\n'                   > "$IMPREPO/app/auth.py"
+printf 'def a():\n    pass\n'                              > "$IMPREPO/app/aaa.py"
+printf 'def b():\n    pass\n'                              > "$IMPREPO/app/bbb.py"
+printf 'def c():\n    pass\n'                              > "$IMPREPO/app/ccc.py"
+printf 'from app import util\n\n\ndef go():\n    return util.helper()\n' > "$IMPREPO/app/stats.py"
+git -C "$IMPREPO" init -q
+git -C "$IMPREPO" -c user.name=t -c user.email=t@t add -A
+git -C "$IMPREPO" -c user.name=t -c user.email=t@t commit -qm init
+cat > "$TMP/imp.patch" <<'EOF'
+diff --git a/app/stats.py b/app/stats.py
+index 1111111..2222222 100644
+--- a/app/stats.py
++++ b/app/stats.py
+@@ -3,3 +3,4 @@ from app import util
+ def go():
++    return util.helper_all()
+     return util.helper()
+EOF
+mkconfig "$TMP/fake1.sh"
+out="$(cd "$IMPREPO" && MULTI_REVIEW_CONFIG="$TMP/config.json" \
+  bash "$ROOT/bin/multi-review" --diff "$TMP/imp.patch" --no-reconcile --timeout 60 2>&1)"
+ws="$(grep -o 'WORKSPACE=.*' <<<"$out" | cut -d= -f2 | tr -d '\r')"
+if [ -n "$ws" ] && [ -f "$ws/prompt.md" ] && grep -q '### app/util.py' "$ws/prompt.md"; then
+  ok "from-import attaches the imported module past the sibling cap"
+else bad "from-import attaches the imported module: $out"; fi
+
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
