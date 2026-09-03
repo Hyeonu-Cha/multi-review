@@ -571,6 +571,35 @@ if [ -n "$ws" ] && [ -f "$ws/prompt.md" ] && grep -q '### app/util.py' "$ws/prom
   ok "from-import attaches the imported module past the sibling cap"
 else bad "from-import attaches the imported module: $out"; fi
 
+# ---- test 24: malformed multi-line keys are sanitised, not propagated -------------
+# start_line arrives null, as a string, or swapped past `line` so the range runs backwards;
+# the reviews API refuses every one. The finding itself is still real, so the bad KEYS are
+# dropped and it posts as a single-line comment — and dropped means ABSENT, since an
+# explicit null is rejected too. A genuine range (start_line < line) must survive intact.
+cat > "$TMP/fake_ml.sh" <<'EOF'
+#!/usr/bin/env bash
+cat > "$1" <<'JSON'
+{"reviewer":"fake","findings":[
+ {"file":"src/app.py","line":2,"side":"right","severity":"high","category":"bug","title":"lowercase side","detail":"d","confidence":0.9},
+ {"file":"src/app.py","line":2,"start_line":null,"start_side":null,"severity":"high","category":"bug","title":"null range","detail":"d","confidence":0.9},
+ {"file":"src/app.py","line":2,"start_line":9,"start_side":"RIGHT","severity":"high","category":"bug","title":"backwards range","detail":"d","confidence":0.9},
+ {"file":"src/app.py","line":3,"start_line":1,"start_side":"right","severity":"high","category":"bug","title":"good range","detail":"d","confidence":0.9}
+]}
+JSON
+EOF
+mkconfig "$TMP/fake_ml.sh"
+out="$(run_engine)"
+f="$(findings_path "$out")"
+if [ -n "$f" ] \
+   && [ "$(jq -r '[.findings[] | select(.title=="lowercase side") | .side] | first' "$f")" = "RIGHT" ] \
+   && [ "$(jq -r '[.findings[] | select(.title=="null range") | has("start_line")] | first' "$f")" = "false" ] \
+   && [ "$(jq -r '[.findings[] | select(.title=="backwards range") | has("start_line")] | first' "$f")" = "false" ] \
+   && [ "$(jq -r '[.findings[] | select(.title=="backwards range")] | length' "$f")" = "1" ] \
+   && [ "$(jq -r '[.findings[] | select(.title=="good range") | .start_line] | first' "$f")" = "1" ] \
+   && [ "$(jq -r '[.findings[] | select(.title=="good range") | .start_side] | first' "$f")" = "RIGHT" ]; then
+  ok "malformed multi-line keys dropped, valid range and side normalised"
+else bad "malformed multi-line keys sanitised: $(cat "$f" 2>/dev/null)"; fi
+
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
