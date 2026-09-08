@@ -600,6 +600,53 @@ if [ -n "$f" ] \
   ok "malformed multi-line keys dropped, valid range and side normalised"
 else bad "malformed multi-line keys sanitised: $(cat "$f" 2>/dev/null)"; fi
 
+# ---- test 25: test-coverage signal appears only when no test was touched ----------
+# It must be a SIGNAL, not a verdict: emitted when a source-only change ships no test, and
+# absent the moment the change does touch one — otherwise reviewers would be nudged toward a
+# "no tests" finding on changes that legitimately have none.
+# Runs in an ISOLATED repo, not $ROOT: the related-context tiers would otherwise attach
+# multi-review's own bin/ and tests/ sources, which contain both this assertion string and
+# the line that emits the heading — so the grep would match the tool's source rather than an
+# emitted section, and pass no matter what the engine did. Anchored to the heading too.
+TCREPO="$TMP/tcrepo"; mkdir -p "$TCREPO/src" "$TCREPO/tests"
+printf 'def main():\n    return 0\n'        > "$TCREPO/src/app.py"
+printf 'def test_main():\n    pass\n'       > "$TCREPO/tests/test_app.py"
+git -C "$TCREPO" init -q
+git -C "$TCREPO" -c user.name=t -c user.email=t@t add -A
+git -C "$TCREPO" -c user.name=t -c user.email=t@t commit -qm init
+mkconfig "$TMP/fake1.sh"
+out="$(cd "$TCREPO" && MULTI_REVIEW_CONFIG="$TMP/config.json" \
+  bash "$ROOT/bin/multi-review" --diff "$TMP/fixture.patch" --no-reconcile --timeout 60 2>&1)"
+ws="$(grep -o 'WORKSPACE=.*' <<<"$out" | cut -d= -f2 | tr -d '\r')"
+src_only_has_signal=0
+[ -n "$ws" ] && grep -qx '## Test coverage signal' "$ws/prompt.md" 2>/dev/null && src_only_has_signal=1
+cat > "$TMP/withtest.patch" <<'EOF'
+diff --git a/src/app.py b/src/app.py
+index 0000000..1111111 100644
+--- a/src/app.py
++++ b/src/app.py
+@@ -1,3 +1,4 @@
+ def main():
++    x = 1 / 0
+     return 0
+diff --git a/tests/test_app.py b/tests/test_app.py
+index 0000000..2222222 100644
+--- a/tests/test_app.py
++++ b/tests/test_app.py
+@@ -1,2 +1,3 @@
+ def test_main():
++    assert True
+     pass
+EOF
+out2="$(cd "$TCREPO" && MULTI_REVIEW_CONFIG="$TMP/config.json" \
+  bash "$ROOT/bin/multi-review" --diff "$TMP/withtest.patch" --no-reconcile --timeout 60 2>&1)"
+ws2="$(grep -o 'WORKSPACE=.*' <<<"$out2" | cut -d= -f2 | tr -d '\r')"
+with_test_has_signal=0
+[ -n "$ws2" ] && grep -qx '## Test coverage signal' "$ws2/prompt.md" 2>/dev/null && with_test_has_signal=1
+if [ "$src_only_has_signal" -eq 1 ] && [ "$with_test_has_signal" -eq 0 ]; then
+  ok "test-coverage signal fires on a source-only change and not when a test is touched"
+else bad "test-coverage signal gating (src_only=$src_only_has_signal with_test=$with_test_has_signal)"; fi
+
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -280,6 +280,28 @@ TOTAL_CAP="$(numenv "${FULLFILE_TOTAL_CAP:-30000}" 30000 FULLFILE_TOTAL_CAP)"
 mapfile -t CHANGED < <(grep -E '^\+\+\+ "?b/' "$DIFF" \
   | sed -E 's/^\+\+\+ //; s/^"//; s/^b\///; s/"$//' \
   | sort -u)
+# ---- test-coverage signal ---------------------------------------------------
+# Whether a change ought to ship tests is a judgement call the reviewers should make, not one
+# the engine should make for them: refactors, renames, comment/config edits and dead-code
+# removal all legitimately touch no test. An engine-emitted "no tests" finding would be a
+# reliable false-positive generator, so state the fact and let them weigh it.
+HAS_TEST=0; HAS_SRC=0
+for f in "${CHANGED[@]}"; do
+  case "$f" in */test/*|*/tests/*|*/__tests__/*|*/spec/*) HAS_TEST=1; continue;; esac
+  case "${f##*/}" in
+    test_*|*_test.*|*.test.*|*.spec.*|*Test.cs|*Tests.cs|*TestCase.*) HAS_TEST=1; continue;;
+  esac
+  HAS_SRC=1
+done
+if [ "$HAS_SRC" -eq 1 ] && [ "$HAS_TEST" -eq 0 ]; then
+  { echo; echo "## Test coverage signal"; echo; echo \
+    "This change modifies no test file. That is frequently fine — refactors, renames,"; echo \
+    "comment/config edits and dead-code removal all legitimately touch no test — so treat"; echo \
+    "this as context for your judgement, NOT as a finding in itself. Raise it only where the"; echo \
+    "change alters BEHAVIOUR a test should pin down, and then say which behaviour is left"; echo \
+    "unguarded. As with any finding, report it on a line that appears in the diff."; } >> "$PROMPT"
+fi
+
 # Fence with FOUR backticks so a changed file that itself contains a ``` fence
 # (e.g. any .md file) can't prematurely close the wrapper.
 FENCE='````'
