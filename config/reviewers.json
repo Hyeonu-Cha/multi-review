@@ -14,12 +14,12 @@
     {
       "name": "codex",
       "enabled": true,
-      "cmd": "codex exec {INSTR} --dangerously-bypass-approvals-and-sandbox"
+      "cmd": "codex exec {INSTR} --sandbox workspace-write --skip-git-repo-check"
     },
     {
       "name": "copilot",
       "enabled": true,
-      "cmd": "copilot -p {INSTR} --allow-all-tools --allow-all-paths"
+      "cmd": "copilot -p {INSTR} --allow-all-tools"
     },
     {
       "name": "cursor",
