@@ -103,14 +103,25 @@ Reviewers run permission-bypassed, so a diff that contains prompt-injection text
   needs — and doesn't start in — your working copy. This keeps a prompt-injected reviewer
   out of your source tree.
 
-These are soft guardrails plus defense-in-depth, **not a sandbox** — reviewers still run
-permission-bypassed and could climb out of the workspace. The default `copilot` reviewer is
-the broadest grant (`--allow-all-tools --allow-all-paths`); `--allow-all-paths` in particular
-lets it reach outside the per-run workspace, so tighten or drop it first if that matters to
-you. For untrusted PRs, prefer restricting each reviewer to read + write-findings tools via
-its CLI's own allowlist where supported, run the whole tool inside a container, and review
-the per-reviewer logs (`out/<ts>/<name>.log`) if anything looks off. Don't point this at diffs
-you wouldn't be comfortable handing to an autonomous agent.
+The default grants are scoped to what a reviewer actually needs — read the prompt/diff handed
+to it, write its findings file — using each CLI's own mechanism where one exists:
+
+- **codex** runs under `--sandbox workspace-write`, which confines writes to the per-run
+  workspace, rather than `--dangerously-bypass-approvals-and-sandbox`. Codex's own help
+  reserves that flag for "environments that are externally sandboxed", which this is not.
+  (`--skip-git-repo-check` is needed because the per-run workspace isn't a git repo.)
+- **copilot** no longer passes `--allow-all-paths`, which disabled path verification entirely
+  and let it reach outside the per-run workspace. Verified that it still writes its findings
+  with the flag removed. `--allow-all-tools` remains: scoping tools needs this CLI's exact
+  tool names, and a wrong guess silently breaks the reviewer rather than failing loudly.
+- **agy** and **cursor** still take a blanket flag; neither exposes a narrower one today.
+
+These remain soft guardrails plus defense-in-depth, **not a sandbox** — a reviewer can still
+misbehave within its workspace. For untrusted PRs, prefer restricting each reviewer to read +
+write-findings tools via its CLI's own allowlist where supported (`copilot --allow-tool` /
+`--available-tools`), run the whole tool inside a container, and review the per-reviewer logs
+(`out/<ts>/<name>.log`) if anything looks off. Don't point this at diffs you wouldn't be
+comfortable handing to an autonomous agent.
 
 ## Requirements (Windows)
 
@@ -250,7 +261,7 @@ Two paths, zero `-p` in the skill:
 
 Toggle reviewers with `enabled`. **Tune each `cmd` per CLI** — the non-interactive flag
 and permission-bypass flag differ (`claude -p … --dangerously-skip-permissions`,
-`agy --print … --dangerously-skip-permissions`, `codex exec …`, `copilot -p … --allow-all-tools --allow-all-paths`, `cursor-agent -p … --force`).
+`agy --print … --dangerously-skip-permissions`, `codex exec …`, `copilot -p … --allow-all-tools`, `cursor-agent -p … --force`).
 
 ### Review criteria
 
