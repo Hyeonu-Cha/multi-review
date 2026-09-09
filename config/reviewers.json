@@ -34,5 +34,9 @@
   },
   "reconcilers": {
     "codex": "cat \"{PROMPT}\" | codex exec --dangerously-bypass-approvals-and-sandbox | tee \"{OUT}\""
+  },
+  "static": {
+    "_comment": "Deterministic regex pass over ADDED lines (merge-conflict markers, credential formats, debugger statements), reported as reviewer \"static\" whenever it finds something. Set enabled:false to turn it off.",
+    "enabled": true
   }
 }

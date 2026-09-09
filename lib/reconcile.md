@@ -33,19 +33,23 @@ defect, keep it at full severity. Dropping a real bug is just as wrong.
 
 ## Also required
 
-- **Validate the line against the diff.** Confirm each kept finding's `file` + `line` + `side`
-  actually appear in the DIFF (added/unchanged → `RIGHT` + new-file line; removed → `LEFT` +
-  old-file line). Drop or correct any finding whose line is not present — this kills
-  hallucinated lines and avoids 422 errors when posting.
+- **Validate the line against the diff.** Each finding carries `on_diff` — its `file` + `line` +
+  `side` is a line the DIFF exposes (added/unchanged → `RIGHT` + new-file line; removed →
+  `LEFT` + old-file line) — and, where the reviewer quoted `evidence`, `evidence_ok` (that text
+  really sits at that line) or `relocated_from` (the engine already moved it to the line whose
+  content matched). These were computed from the hunk headers, not guessed: trust them. For
+  `on_diff: false`, find the diff line the finding is really about and move it there, or drop
+  it — one comment on a line the diff doesn't expose 422s the whole review.
 - **Verify the line's CONTENT, then relocate if needed.** Presence isn't enough — a reviewer
   may cite a line that exists but points at the wrong content (e.g. it counted the line's
   position within the diff text, which is offset from the real file line by the header lines).
   If the code at the reported line doesn't match what the finding describes, move `line`/`side`
   to the line it is actually about. Only drop it if no line in the diff matches.
-- **Demote what this change didn't introduce.** The "Lines this change introduced" section
-  below lists exactly which lines this change ADDED — don't infer it from `+` prefixes, look
-  it up there. For a finding on the **RIGHT** side whose line is **not** in that list, the PR
-  did not introduce it: reviewers see only the post-change file and routinely charge
+- **Demote what this change didn't introduce.** Each finding carries `introduced` — whether
+  this change ADDED that line — computed from the hunk headers, and the "Lines this change
+  introduced" section below lists the same set; don't infer it from `+` prefixes. For a
+  **RIGHT**-side finding with `introduced: false`, the PR did not introduce it:
+  reviewers see only the post-change file and routinely charge
   long-standing bugs to the change, which is the top false-positive class. Drop it, or keep
   it at `[[LOW]]` marked "pre-existing, not introduced here". A defect on a genuinely added
   line stays at full severity.
@@ -53,6 +57,16 @@ defect, keep it at full severity. Dropping a real bug is just as wrong.
   change *deleted* — the deletion IS the change, so never demote it as pre-existing. "This
   removes a guard/check that callers rely on" is a real and often serious finding.
   (If that section is absent, fall back to reading `+` lines from the diff.)
+- **…unless a changed line is the cause.** Breakage that surfaces in unchanged code but is
+  *caused* by this change — a signature changed and an unchanged caller no longer binds, a
+  guard removed and a downstream crash now reachable, a return type changed — is a real
+  regression, not pre-existing. If a finding on a non-introduced line names such a cause,
+  relocate it to the changed line that causes it (an introduced line, or the `LEFT` removed
+  line) and keep full severity; demote only when the defect is independent of this change.
+- **`static` is a regex pass, not a model.** Its findings are literal matches on added lines
+  (merge-conflict markers, credential formats, debugger statements). The match itself is
+  certain; what you judge is whether the hit is a real defect — a documented example key or
+  a test fixture is not. Otherwise keep it at full severity.
 - **Merge duplicates.** If two+ reviewers flag the same underlying issue (same file +
   overlapping lines + same root cause), collapse them into one comment and note who raised it.
 - **You set the severity and confidence.** Judge impact from the code you just read; do not
