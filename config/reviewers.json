@@ -14,7 +14,7 @@
     {
       "name": "codex",
       "enabled": true,
-      "cmd": "codex exec {INSTR} --sandbox workspace-write --skip-git-repo-check"
+      "cmd": "codex exec {INSTR} -s danger-full-access --skip-git-repo-check --ignore-user-config"
     },
     {
       "name": "copilot",
