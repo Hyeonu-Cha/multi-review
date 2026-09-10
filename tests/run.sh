@@ -217,14 +217,28 @@ if jq -r '.comments[].body' "$FAKE_GH_POSTED" 2>/dev/null \
   bad "post: same-line same-severity findings get distinct fingerprints"
 else ok "post: same-line same-severity findings get distinct fingerprints"; fi
 
-# test 8: re-run with those comments already on the PR — nothing new posted
+# test 8: re-run with those comments already on the PR — the two already posted are skipped
+# and the third, which the cap cut last time, now posts: the cap is applied AFTER dedupe.
+# Capping first let the already-posted pair fill both slots, so on a PR with more findings
+# than the cap a re-run reported "nothing new" forever and the rest never surfaced.
 jq -r '.comments[].body' "$FAKE_GH_POSTED" > "$FAKE_GH_COMMENTS"
 rm -f "$FAKE_GH_POSTED"
 out="$(post_run)"
 if grep -q 'skipped 2 finding(s) already posted' <<<"$out" \
+   && [ -f "$FAKE_GH_POSTED" ] \
+   && jq -e '.comments | length == 1' "$FAKE_GH_POSTED" >/dev/null \
+   && jq -e '.comments[0].body | contains("minor C")' "$FAKE_GH_POSTED" >/dev/null \
+   && jq -e '.body | contains("omitted by --max-comments") | not' "$FAKE_GH_POSTED" >/dev/null; then
+  ok "post: re-run skips already-posted findings and surfaces the one the cap cut"
+else bad "post: re-run skips posted, surfaces capped: $out"; fi
+# a third run, with all three on the PR, posts nothing
+jq -r '.comments[].body' "$FAKE_GH_POSTED" >> "$FAKE_GH_COMMENTS"
+rm -f "$FAKE_GH_POSTED"
+out="$(post_run)"
+if grep -q 'skipped 3 finding(s) already posted' <<<"$out" \
    && grep -q 'nothing new to post' <<<"$out" && [ ! -f "$FAKE_GH_POSTED" ]; then
-  ok "post: re-run dedupes already-posted findings, posts nothing"
-else bad "post: re-run dedupes already-posted findings, posts nothing: $out"; fi
+  ok "post: re-run with everything already posted posts nothing"
+else bad "post: re-run with everything posted posts nothing: $out"; fi
 
 # test 9: --block lets REQUEST_CHANGES through
 : > "$FAKE_GH_COMMENTS"; rm -f "$FAKE_GH_POSTED"
@@ -646,6 +660,161 @@ with_test_has_signal=0
 if [ "$src_only_has_signal" -eq 1 ] && [ "$with_test_has_signal" -eq 0 ]; then
   ok "test-coverage signal fires on a source-only change and not when a test is touched"
 else bad "test-coverage signal gating (src_only=$src_only_has_signal with_test=$with_test_has_signal)"; fi
+
+# ---- test 26: --with-content appends the line text; the default output is unchanged ---
+# The static checks need the text of each added line; other consumers key on fields 1-4 and
+# must see exactly what they saw before. Content may itself contain tabs (field 5+).
+printf 'diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1,2 +1,3 @@\n line1\n+\tadded\twith tabs\n-gone\n' > "$TMP/wc.patch"
+dl0="$(bash "$ROOT/lib/diff-lines.sh" "$TMP/wc.patch")"
+dl1="$(bash "$ROOT/lib/diff-lines.sh" --with-content "$TMP/wc.patch")"
+if grep -qx $'x.py\tRIGHT\t2\tadded' <<<"$dl0" && grep -qx $'x.py\tLEFT\t2\tremoved' <<<"$dl0" \
+   && grep -qx $'x.py\tRIGHT\t2\tadded\t\tadded\twith tabs' <<<"$dl1" \
+   && grep -qx $'x.py\tLEFT\t2\tremoved\tgone' <<<"$dl1" \
+   && grep -qx $'x.py\tRIGHT\t1\tcontext\tline1' <<<"$dl1"; then
+  ok "diff-lines --with-content carries the line text; default output unchanged"
+else bad "diff-lines --with-content: [$dl0] [$dl1]"; fi
+
+# ---- test 27: findings are grounded in the diff before anyone judges them ---------------
+# Path canonicalised (`a/`-prefixed → changed-file path), on_diff/introduced stamped from the
+# hunk parser (line 1 is context, line 2 was added, 4242 is nowhere), and a finding on an
+# attached RELATED file (src/sibling.py, attached in test 4's repo) dropped outright.
+cat > "$TMP/fake_ground.sh" <<'EOF2'
+#!/usr/bin/env bash
+cat > "$1" <<'JSON'
+{"reviewer":"fake","findings":[
+ {"file":"a/src/app.py","line":2,"side":"RIGHT","severity":"high","category":"bug","title":"added line","detail":"d","confidence":0.9},
+ {"file":"src/app.py","line":1,"side":"RIGHT","severity":"low","category":"bug","title":"context line","detail":"d","confidence":0.9},
+ {"file":"src/app.py","line":4242,"side":"RIGHT","severity":"low","category":"bug","title":"ghost line","detail":"d","confidence":0.9},
+ {"file":"src/sibling.py","line":2,"side":"RIGHT","severity":"high","category":"bug","title":"on related file","detail":"d","confidence":0.9}
+]}
+JSON
+EOF2
+mkconfig "$TMP/fake_ground.sh"
+out="$(cd "$REPO" && MULTI_REVIEW_CONFIG="$TMP/config.json" \
+  bash "$ROOT/bin/multi-review" --diff "$TMP/fixture.patch" --no-reconcile --timeout 60 2>&1)"
+f="$(findings_path "$out" | tr -d '\r')"
+if [ -n "$f" ] \
+   && [ "$(jq -r '.findings | length' "$f")" = "3" ] \
+   && [ "$(jq -r '[.findings[] | select(.title=="added line") | .file, .on_diff, .introduced] | join(",")' "$f")" = "src/app.py,true,true" ] \
+   && [ "$(jq -r '[.findings[] | select(.title=="context line") | .on_diff, .introduced] | join(",")' "$f")" = "true,false" ] \
+   && [ "$(jq -r '[.findings[] | select(.title=="ghost line") | .on_diff, .introduced] | join(",")' "$f")" = "false,false" ] \
+   && grep -q '1 dropped (on related files)' <<<"$out"; then
+  ok "findings grounded: canonical path, on_diff/introduced stamped, related-file finding dropped"
+else bad "findings grounded: $out $(cat "$f" 2>/dev/null)"; fi
+
+# ---- test 28: a mis-numbered finding is relocated by its quoted evidence ---------------
+# Reviewers count positions in the diff text instead of file lines. With the flagged line
+# quoted in `evidence`, the finding moves to the diff line whose content matches (7 → 2)
+# instead of dying as a 422; a correct line is confirmed (evidence_ok) and left alone; an
+# evidence string found nowhere is marked false and the line kept. A multi-line range that
+# the move turns backwards loses the range, not the finding. Needs the post-change file on
+# disk, so a fresh repo whose working tree IS the post-change state.
+EVREPO="$TMP/evrepo"; mkdir -p "$EVREPO/src"
+printf 'def main():\n    x = 1 / 0\n    return 0\n' > "$EVREPO/src/app.py"
+git -C "$EVREPO" init -q
+git -C "$EVREPO" -c user.name=t -c user.email=t@t add -A
+git -C "$EVREPO" -c user.name=t -c user.email=t@t commit -qm init
+cat > "$TMP/fake_evidence.sh" <<'EOF2'
+#!/usr/bin/env bash
+cat > "$1" <<'JSON'
+{"reviewer":"fake","findings":[
+ {"file":"src/app.py","line":7,"side":"RIGHT","severity":"high","category":"bug","title":"moved","detail":"d","evidence":"x = 1 / 0","confidence":0.9},
+ {"file":"src/app.py","line":2,"side":"RIGHT","severity":"high","category":"bug","title":"confirmed","detail":"d","evidence":"    x = 1 / 0","confidence":0.9},
+ {"file":"src/app.py","line":2,"side":"RIGHT","severity":"high","category":"bug","title":"unfound","detail":"d","evidence":"y = totally different","confidence":0.9},
+ {"file":"src/app.py","line":9,"start_line":3,"start_side":"RIGHT","side":"RIGHT","severity":"high","category":"bug","title":"range","detail":"d","evidence":"x = 1 / 0","confidence":0.9}
+]}
+JSON
+EOF2
+mkconfig "$TMP/fake_evidence.sh"
+out="$(cd "$EVREPO" && MULTI_REVIEW_CONFIG="$TMP/config.json" \
+  bash "$ROOT/bin/multi-review" --diff "$TMP/fixture.patch" --no-reconcile --timeout 60 2>&1)"
+f="$(findings_path "$out" | tr -d '\r')"
+if [ -n "$f" ] \
+   && [ "$(jq -r '[.findings[] | select(.title=="moved") | .line, .relocated_from, .evidence_ok, .on_diff, .introduced] | join(",")' "$f")" = "2,7,true,true,true" ] \
+   && [ "$(jq -r '[.findings[] | select(.title=="confirmed") | .line, .evidence_ok, has("relocated_from")] | join(",")' "$f")" = "2,true,false" ] \
+   && [ "$(jq -r '[.findings[] | select(.title=="unfound") | .line, .evidence_ok] | join(",")' "$f")" = "2,false" ] \
+   && [ "$(jq -r '[.findings[] | select(.title=="range") | .line, has("start_line")] | join(",")' "$f")" = "2,false" ] \
+   && grep -q '2 relocated by evidence' <<<"$out"; then
+  ok "evidence relocates a mis-numbered finding, confirms a correct one, keeps an unfound one"
+else bad "evidence relocation: $out $(cat "$f" 2>/dev/null)"; fi
+
+# ---- test 29: the static reviewer flags added lines only, and skips documented examples --
+# A conflict marker, a real-looking AWS key and a debugger call on ADDED lines are reported
+# as reviewer "static"; AWS's documented example key (line 4) is skipped; the context line
+# with a marker is not this change's doing; a prose mention of "debugger" is not a statement.
+# Disabled via config, the reviewer must not appear at all.
+cat > "$TMP/static.patch" <<'EOF2'
+diff --git a/src/cfg.py b/src/cfg.py
+index 0000000..1111111 100644
+--- a/src/cfg.py
++++ b/src/cfg.py
+@@ -1,2 +1,7 @@
+ KEY = "AKIAIOSFODNN7EXAMPLE"
++<<<<<<< HEAD
++AWS_KEY = "AKIAABCDEFGHIJKLMNOP"
++DOC_KEY = "AKIAIOSFODNN7EXAMPLE"
++breakpoint()
++x = "the debugger says hi"
+ >>>>>>> feature
+EOF2
+mkconfig "$TMP/fake1.sh"
+out="$(cd "$ROOT" && MULTI_REVIEW_CONFIG="$TMP/config.json" \
+  bash bin/multi-review --diff "$TMP/static.patch" --no-reconcile --timeout 60 2>&1)"
+sf="$(grep -o 'FINDINGS\[static\]=.*' <<<"$out" | cut -d= -f2 | tr -d '\r')"
+if [ -n "$sf" ] && [ -f "$sf" ] \
+   && [ "$(jq -r '.reviewer' "$sf")" = "static" ] \
+   && [ "$(jq -r '[.findings[] | .line] | sort | join(",")' "$sf")" = "2,3,5" ] \
+   && jq -e '[.findings[] | select(.line==2) | .detail | contains("conflict-marker")] | all and length==1' "$sf" >/dev/null \
+   && jq -e '[.findings[] | select(.line==3) | .severity=="critical"] | all and length==1' "$sf" >/dev/null \
+   && jq -e '[.findings[] | select(.line==5) | .detail | contains("debug-leftover")] | all and length==1' "$sf" >/dev/null \
+   && jq -e '[.findings[] | .on_diff and .introduced] | all' "$sf" >/dev/null \
+   && grep -q 'static checks: 3 finding(s)' <<<"$out"; then
+  ok "static reviewer flags conflict marker, real key, debugger on added lines; skips example key"
+else bad "static reviewer: $out $(cat "$sf" 2>/dev/null)"; fi
+cat > "$TMP/config.json" <<EOF2
+{ "reviewers": [ { "name": "fake", "enabled": true, "cmd": "bash $TMP/fake1.sh {OUT}" } ],
+  "instruction": "review {DIFF} per {PROMPT}; write findings to {OUT}",
+  "reconciler": { "name": "true", "cmd": "true" },
+  "static": { "enabled": false } }
+EOF2
+out="$(cd "$ROOT" && MULTI_REVIEW_CONFIG="$TMP/config.json" \
+  bash bin/multi-review --diff "$TMP/static.patch" --no-reconcile --timeout 60 2>&1)"
+if ! grep -q 'FINDINGS\[static\]' <<<"$out" && grep -q 'FINDINGS\[fake\]' <<<"$out"; then
+  ok "static reviewer can be disabled in config"
+else bad "static reviewer disabled: $out"; fi
+
+# ---- test 30: line must be a positive integer; confidence/evidence typed or absent ------
+# 0, negatives and fractions all 422 on posting (and a fraction mis-anchors every lookup);
+# a non-numeric confidence or non-string evidence is dropped from the finding, not fatal.
+cat > "$TMP/fake_types.sh" <<'EOF2'
+#!/usr/bin/env bash
+cat > "$1" <<'JSON'
+{"reviewer":"fake","findings":[
+ {"file":"src/app.py","line":0,"severity":"high","title":"zero"},
+ {"file":"src/app.py","line":-1,"severity":"high","title":"negative"},
+ {"file":"src/app.py","line":2.5,"severity":"high","title":"fraction"},
+ {"file":"src/app.py","line":2,"severity":"high","title":"typed","confidence":"high","evidence":42}
+]}
+JSON
+EOF2
+mkconfig "$TMP/fake_types.sh"
+out="$(run_engine)"
+f="$(findings_path "$out" | tr -d '\r')"
+if [ -n "$f" ] && [ "$(jq -r '.findings | length' "$f")" = "1" ] \
+   && [ "$(jq -r '.findings[0] | [.title, (has("confidence")|tostring), (has("evidence")|tostring)] | join(",")' "$f" | tr -d '\r')" = "typed,false,false" ]; then
+  ok "non-positive/fractional line dropped; mistyped confidence/evidence stripped"
+else bad "line/confidence/evidence typing: $(cat "$f" 2>/dev/null)"; fi
+
+# ---- test 31: the output rules are restated at the END of the prompt ------------------
+# The schema sits at the top, possibly tens of thousands of lines above where the findings
+# are written; the recap has to be the last thing the reviewer reads.
+mkconfig "$TMP/fake1.sh"
+out="$(run_engine)"
+ws="$(grep -o 'WORKSPACE=.*' <<<"$out" | cut -d= -f2 | tr -d '\r')"
+if [ -n "$ws" ] && tail -12 "$ws/prompt.md" | grep -q '^## Before you write your findings (recap)' \
+   && tail -12 "$ws/prompt.md" | grep -q 'evidence'; then
+  ok "output-rules recap is the last section of the prompt"
+else bad "prompt recap at end: $(tail -12 "$ws/prompt.md" 2>/dev/null)"; fi
 
 echo
 echo "$pass passed, $fail failed"

@@ -68,7 +68,18 @@ a pipe, but still do file/tool work fine headless — so capturing via the writt
 works without any terminal. Output that arrives wrapped in markdown fences or prose is
 **salvaged** (the outermost JSON object is extracted; original kept at `<name>.json.raw`)
 instead of dropping the reviewer, and individual findings missing a typed
-`file`/`line`/`severity` are dropped so downstream stages can trust every field. A final
+`file`/`line`/`severity` are dropped so downstream stages can trust every field.
+
+Before the judge sees anything, the engine **grounds every finding in the diff**: paths are
+canonicalised to the changed file; findings on the related (unchanged) context files are
+dropped; a finding whose quoted `evidence` line does not sit at its `line` is **relocated**
+to the diff line whose content matches (reviewers count positions in the diff text instead
+of file lines — a real bug with the wrong number used to be lost to a 422); and each finding
+is stamped `on_diff` / `introduced` from the hunk headers, so "pre-existing" is a fact the
+judge reads, not a call it makes. A deterministic **`static` reviewer** — regex over added
+lines for merge-conflict markers, credential formats, and debugger statements — joins the
+fan-out whenever it finds something (`"static": {"enabled": false}` in the config turns it
+off). A final
 headless reconcile pass acts as a **judge**: it verifies each candidate finding against the
 code, drops what it can't confirm, merges duplicates, and ranks by severity. Reviewers are
 treated as candidate generators, so agreement means "more candidates to check", not proof.
@@ -193,7 +204,9 @@ specific line).
   severity and title — so two distinct findings on the same line stay distinct); a later
   run on the same PR fetches existing comments and skips findings already posted.
 - **Comment cap:** at most `--max-comments` (default 20) inline comments, ranked
-  most-important-first by the reconciler; the rest are noted in the review body.
+  most-important-first by the reconciler; the rest are noted in the review body. The cap
+  is applied *after* the already-posted and unpostable comments are removed, so a re-run
+  surfaces the findings a previous run's cap cut instead of reporting "nothing new".
 - **Non-blocking by default:** a `REQUEST_CHANGES` verdict is downgraded to `COMMENT`
   unless you pass `--block` — an unverified model finding shouldn't gate merges.
 
@@ -281,9 +294,11 @@ bash tests/run.sh
 
 Smoke-tests the engine with a **fake reviewer CLI** — no real AI CLI, network, or `gh`
 needed (bash + jq + git only). Covers fan-out + findings capture, JSON salvage of
-fence/prose-wrapped output, per-finding sanitization, related-file context, workspace
-collision, context budgets, non-integer env-knob coercion, the posting path (fake `gh`),
-and flag plumbing. CI (`.github/workflows/ci.yml`) runs these on every PR, plus
+fence/prose-wrapped output, per-finding sanitization, finding grounding (canonical paths,
+evidence-based line relocation, `on_diff`/`introduced`), the static reviewer, related-file
+context, workspace collision, context budgets, non-integer env-knob coercion, the posting
+path (fake `gh`, including cap-after-dedupe on re-runs), and flag plumbing.
+CI (`.github/workflows/ci.yml`) runs these on every PR, plus
 `bash -n` syntax checks and `shellcheck --severity=warning` on all three scripts.
 
 ## Recall + precision benchmark

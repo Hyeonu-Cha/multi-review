@@ -102,6 +102,7 @@ Output **only** a single JSON object, no prose before/after, no markdown fences:
       "title": "<short one-line summary>",
       "detail": "<why it is a problem, its production impact, and the fix>",
       "suggestion": "<exact replacement code for that line, or null>",
+      "evidence": "<the flagged line, copied verbatim from the file>",
       "confidence": 0.0
     }
   ]
@@ -131,9 +132,21 @@ Line/side rules (needed so the reconcile pass can post inline accurately):
     +x = 1 / 0        ← new-file line 3   ← report line: 3, NOT 7
     ```
 - Only flag lines that actually appear in the diff below. Never invent line numbers.
+- `evidence` is **required**: paste the exact text of the line you are flagging (the
+  post-change line for `RIGHT`, the removed line for `LEFT`). It is checked against the
+  file — a finding whose `evidence` is right but whose `line` is wrong is **moved** to the
+  line that matches instead of being discarded. This is your safety net for line counting.
+- Breakage in **unchanged** code that a changed line *causes* — a signature change an
+  unchanged caller no longer satisfies, a removed guard that lets a downstream crash
+  through, a changed return type — is a real finding: anchor it on the **changed line
+  that causes it** and name the affected site in `detail`. A finding anchored on an
+  unchanged line is treated as pre-existing and demoted.
+- Findings on the related unchanged files are dropped mechanically before anyone reads
+  them — they cannot be posted, and each one costs you a finding.
 - For a multi-line finding, also include `"start_line"` and `"start_side"`; `line`/`side`
   mark the end of the range.
 - `suggestion` is the exact replacement code matching the file's indentation, or `null`
   when the fix needs a redesign that cannot be a direct line replacement.
 
 `confidence` is 0.0–1.0: severity = impact, confidence = how sure you are.
+`evidence` is the flagged line's text, verbatim (leading whitespace may be omitted).
