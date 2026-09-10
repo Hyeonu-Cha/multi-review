@@ -117,10 +117,15 @@ Reviewers run permission-bypassed, so a diff that contains prompt-injection text
 The default grants are scoped to what a reviewer actually needs — read the prompt/diff handed
 to it, write its findings file — using each CLI's own mechanism where one exists:
 
-- **codex** runs under `--sandbox workspace-write`, which confines writes to the per-run
-  workspace, rather than `--dangerously-bypass-approvals-and-sandbox`. Codex's own help
-  reserves that flag for "environments that are externally sandboxed", which this is not.
-  (`--skip-git-repo-check` is needed because the per-run workspace isn't a git repo.)
+- **codex** runs `-s danger-full-access --skip-git-repo-check --ignore-user-config`. The
+  narrower `-s workspace-write` was tried and **does not work on Windows**: codex has no
+  sandbox backend here, so it reports `sandbox: read-only` and the reviewer cannot write its
+  findings file at all — a silent mute rather than an error. Codex's sandbox modes are
+  effectively a no-op on this platform, so the permissive mode is load-bearing; tighten it
+  on Linux/macOS, where Landlock/Seatbelt actually confine it. `--skip-git-repo-check` is
+  needed because the per-run workspace isn't a git repo, and `--ignore-user-config` keeps a
+  model pinned in your personal `~/.codex/config.toml` from breaking review runs (a stale
+  pin returns `404 model does not exist`), so reviews use codex's own current default.
 - **copilot** no longer passes `--allow-all-paths`, which disabled path verification entirely
   and let it reach outside the per-run workspace. Verified that it still writes its findings
   with the flag removed. `--allow-all-tools` remains: scoping tools needs this CLI's exact
