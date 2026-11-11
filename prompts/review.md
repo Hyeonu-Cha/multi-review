@@ -13,7 +13,7 @@ source files** — you only emit JSON findings (a later reconcile pass merges an
 
 1. Correctness — active bugs, logic errors, wrong conditionals/ordering, off-by-one.
 2. Production stability risk and runtime failure modes (crashes, unhandled errors).
-3. Behavioral regression; flag paths where regression cannot be ruled out from the diff.
+3. Behavioral regression that is demonstrable from the diff or the attached files.
 4. Security concerns (injection, authz/authn, secrets, unsafe deserialization, SSRF).
 5. Concurrency — async correctness, blocking calls, races, shared mutable state.
 6. Resource handling — leaks, unclosed handles, unbounded growth.
@@ -75,8 +75,11 @@ Every finding must resolve to a concrete, fixable issue on a specific changed li
 - Do not speculate. Only report what is directly inferable from the diff or
   well-established behavior of the language/framework in use.
 - If the diff lacks evidence to establish the issue, do not raise it.
-- Only report when confidence is at least ~0.8 that the issue is real and needs a fix.
-- Prefer missing a borderline bug over emitting a speculative one. Precision > coverage.
+- Report an issue when confidence is at least ~0.6 that it is real and needs a fix, and
+  set `confidence` honestly. A later pass verifies every finding against the code and
+  drops what it cannot confirm, so a real bug you withhold is lost for good, while a
+  plausible one you report gets checked. This lowers the bar for evidence-backed
+  findings only; it does not license guesses.
 - If the diff is clean, output an empty `findings` array.
 
 ## Severity
