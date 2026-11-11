@@ -816,6 +816,21 @@ if [ -n "$ws" ] && tail -12 "$ws/prompt.md" | grep -q '^## Before you write your
   ok "output-rules recap is the last section of the prompt"
 else bad "prompt recap at end: $(tail -12 "$ws/prompt.md" 2>/dev/null)"; fi
 
+# ---- no default timeout: a reviewer slower than one poll interval is still waited for ----
+# With no --timeout the engine must wait for reviewers rather than cut them off; --timeout 1
+# on the same reviewer is the control that proves the flag still caps the wait when asked.
+cat > "$TMP/fake_slow.sh" <<'EOF'
+#!/usr/bin/env bash
+sleep 7
+printf '%s' '{"reviewer":"fake","findings":[]}' > "$1"
+EOF
+mkconfig "$TMP/fake_slow.sh"
+out="$(cd "$ROOT" && MULTI_REVIEW_CONFIG="$TMP/config.json" bash bin/multi-review --diff "$TMP/fixture.patch" --no-reconcile 2>&1)"
+out_capped="$(cd "$ROOT" && MULTI_REVIEW_CONFIG="$TMP/config.json" bash bin/multi-review --diff "$TMP/fixture.patch" --no-reconcile --timeout 1 2>&1)"
+if grep -q 'FINDINGS\[fake\]=' <<<"$out" && ! grep -q ' timeout' <<<"$out" && grep -q ' timeout' <<<"$out_capped"; then
+  ok "no default timeout: slow reviewer is waited for; --timeout still caps when given"
+else bad "no default timeout: $out"; fi
+
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

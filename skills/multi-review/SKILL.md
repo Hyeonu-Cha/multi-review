@@ -20,9 +20,9 @@ Resolve `TOOL_DIR` — the directory holding `bin/`, `config/`, `prompts/`, `lib
 ## 2. Fan out the external reviewers (headless)
 From the repo being reviewed, run the engine in fan-out-only mode:
 ```
-bash $TOOL_DIR/bin/multi-review <PR# | --base <ref> | --diff <file>> --no-reconcile --timeout 900
+bash $TOOL_DIR/bin/multi-review <PR# | --base <ref> | --diff <file>> --no-reconcile
 ```
-This runs every reviewer enabled in `$TOOL_DIR/config/reviewers.json` (e.g. `agy`) as a headless background job; each writes JSON findings to a file. The command prints lines you must capture:
+There is no default timeout — the engine waits until every reviewer has finished, and slow models can take well over 10 minutes, so run it as a **background** command and wait for it to exit (pass `--timeout <seconds>` only if the user wants a cap). This runs every reviewer enabled in `$TOOL_DIR/config/reviewers.json` (e.g. `agy`) as a headless background job; each writes JSON findings to a file. The command prints lines you must capture:
 ```
 WORKSPACE=<dir>   DIFF=<path>   FINDINGS[<name>]=<path>   FAILED[<name>]=<log>
 ```

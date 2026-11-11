@@ -189,7 +189,7 @@ bin/multi-review 42 --reconciler codex        # use codex to reconcile instead o
 bin/multi-review 42 --post                    # post combined review to the PR
 bin/multi-review 42 --post --max-comments 10  # cap inline comments (default 20)
 bin/multi-review 42 --post --block            # let REQUEST_CHANGES actually block the PR
-bin/multi-review 42 --timeout 1200            # wait longer for reviewers to finish
+bin/multi-review 42 --timeout 1200            # optional: give up after 20 min (default: wait for all)
 
 # Skill path (in Claude Code):
 /multi-review 42                    # reviews PR #42 with agy + codex + copilot + cursor + in-session claude

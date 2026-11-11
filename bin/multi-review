@@ -26,7 +26,8 @@
 #   --block             allow a REQUEST_CHANGES verdict to be posted as-is; without it
 #                       the verdict is downgraded to COMMENT so an unverified model
 #                       finding can't gate merges
-#   --timeout SECONDS   per-run wait for reviewers to write their JSON (default 900)
+#   --timeout SECONDS   give up waiting for reviewers after this long (default 0 = no limit:
+#                       wait until every reviewer has finished; Ctrl-C stops them cleanly)
 #   --print-root        print this tool's install dir (TOOL_DIR) and exit
 #                       (used by the /multi-review skill to locate config/prompts)
 #
@@ -129,7 +130,7 @@ numenv() { # numenv VALUE DEFAULT NAME
 
 # ---- parse args -------------------------------------------------------------
 PR=""; DIFF_FILE=""; BASE="origin/main"
-REVIEWERS_OVERRIDE=""; RECONCILER_OVERRIDE=""; POST=0; TIMEOUT=900; BACKEND="auto"; NO_RECONCILE=0
+REVIEWERS_OVERRIDE=""; RECONCILER_OVERRIDE=""; POST=0; TIMEOUT=0; BACKEND="auto"; NO_RECONCILE=0
 MAX_COMMENTS=20; BLOCK=0
 needval() { [ $# -ge 2 ] || die "missing argument for $1"; }
 while [ $# -gt 0 ]; do
@@ -143,7 +144,7 @@ while [ $# -gt 0 ]; do
     --post)        POST=1; shift;;
     --max-comments) needval "$@"; [[ "$2" =~ ^[0-9]+$ ]] || die "max-comments must be a positive integer: $2"; MAX_COMMENTS="$2"; shift 2;;
     --block)       BLOCK=1; shift;;
-    --timeout)    needval "$@"; [[ "$2" =~ ^[0-9]+$ ]] || die "timeout must be a positive integer: $2"; TIMEOUT="$2"; shift 2;;
+    --timeout)    needval "$@"; [[ "$2" =~ ^[0-9]+$ ]] || die "timeout must be a non-negative integer (0 = no limit): $2"; TIMEOUT="$2"; shift 2;;
     --print-root|--where) echo "$ROOT"; exit 0;;
     # Print the leading comment block (everything after the shebang up to the first
     # non-comment line), stripping the leading '# '. Avoids a hardcoded line range
@@ -730,7 +731,7 @@ while :; do
   # stop as soon as every reviewer has finished (wrote its .rc), pass or fail —
   # don't block the full timeout on a reviewer that crashed without valid JSON.
   [ "$finished" -ge "${#NAMES[@]}" ] && break
-  [ "$elapsed" -ge "$TIMEOUT" ] && { echo " timeout"; TIMED_OUT=1; break; }
+  [ "$TIMEOUT" -gt 0 ] && [ "$elapsed" -ge "$TIMEOUT" ] && { echo " timeout"; TIMED_OUT=1; break; }
   sleep 5; elapsed=$((elapsed+5)); echo -n "."
 done
 echo " ($valid/${#NAMES[@]} produced valid JSON, $finished/${#NAMES[@]} finished)"
